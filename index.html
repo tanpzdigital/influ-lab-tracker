@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Influ Lab Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%;background:#111}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:rgba(198,241,53,.3);border-radius:2px}
+input[type=file]{display:none}
+input[type=date]{color-scheme:dark}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useCallback,useMemo,useEffect,useRef}=React;
+
+const TODAY=new Date().toISOString().slice(0,10);
+const DEMO=[
+  {id:1,post:"Como viralizar!",date:TODAY,investedUSD:23.92,clicks:314,ctr:3.02,reach:9837,profileVisits:305,conversations:3,followers:43},
+  {id:2,post:"Para aprender comenta aqui EU...",date:TODAY,investedUSD:20.55,clicks:1155,ctr:6.79,reach:16486,profileVisits:1056,conversations:1,followers:10},
+  {id:3,post:"Para aprender comenta: EU QUERO",date:TODAY,investedUSD:91.46,clicks:1221,ctr:1.94,reach:57177,profileVisits:1260,conversations:14,followers:201},
+  {id:4,post:"Para aprender comenta: EU QUERO v2",date:TODAY,investedUSD:82.82,clicks:737,ctr:1.56,reach:43172,profileVisits:723,conversations:1,followers:65},
+  {id:5,post:"Comece a criar influencer IA...",date:TODAY,investedUSD:58.56,clicks:1322,ctr:5.13,reach:22383,profileVisits:1297,conversations:1,followers:22},
+  {id:6,post:"Aprenda a criar IA para vender...",date:TODAY,investedUSD:69.14,clicks:3331,ctr:6.96,reach:44695,profileVisits:3212,conversations:4,followers:249},
+  {id:7,post:"Como viralizar! (v2)",date:TODAY,investedUSD:47.04,clicks:477,ctr:1.13,reach:39418,profileVisits:497,conversations:1,followers:68},
+  {id:8,post:"Responde: TENHO INTERESSE",date:TODAY,investedUSD:42.70,clicks:49,ctr:0.84,reach:4407,profileVisits:110,conversations:28,followers:7},
+];
+
+function splitLine(line){
+  const out=[];let cur="",inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;continue;}inQ=!inQ;}
+    else if(ch===','&&!inQ){out.push(cur.trim());cur="";}
+    else cur+=ch;
+  }
+  out.push(cur.trim());return out;
+}
+
+function parseCSVText(text,rate){
+  const clean=text.replace(/^\uFEFF/,"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  const lines=clean.split("\n").filter(l=>l.trim());
+  if(lines.length<2)return{rows:[],nameCol:null};
+  const rawH=splitLine(lines[0]);
+  const H=rawH.map(h=>h.toLowerCase().replace(/[""'']/g,"").trim());
+  const fi=(...keys)=>{for(const k of keys){const i=H.findIndex(h=>h.includes(k));if(i>=0)return i;}return -1;};
+  let iName=fi("nome da campanha","campaign name");
+  let nameCol=rawH[iName]||"Nome da campanha";
+  if(iName<0){iName=fi("nome do an","ad name");nameCol=rawH[iName]||"Ad Name";}
+  if(iName<0){iName=fi("nome do conjunto","ad set");nameCol=rawH[iName]||"Ad Set";}
+  const iDate=fi("início dos relat","reporting starts");
+  const iSpent=fi("valor usado","amount spent");
+  const iClick=fi("cliques no link","link clicks");
+  const iCTR=fi("ctr (taxa","ctr");
+  const iReach=fi("alcance","reach");
+  const iFoll=fi("seguidores no instagram","seguidores","page likes");
+  const iVisit=fi("visitas ao perfil","profile visits");
+  const iConv=fi("conversas por mensagem","messaging conversation");
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const c=splitLine(lines[i]);if(c.length<3)continue;
+    const usd=iSpent>=0?(parseFloat(c[iSpent].replace(",",".").replace(/[^0-9.]/g,""))||0):0;
+    const ctr=iCTR>=0?parseFloat(parseFloat(c[iCTR].replace(",",".")).toFixed(2))||0:0;
+    const rawName=iName>=0?c[iName]:"Campanha "+i;
+    const post=rawName.replace(/^Post do Instagram:\s*/i,"").trim()||rawName;
+    rows.push({id:i,post,rawPost:rawName,
+      date:iDate>=0?c[iDate].trim():"",
+      investedUSD:usd,investedBRL:parseFloat((usd*rate).toFixed(2)),
+      clicks:iClick>=0?parseInt(c[iClick])||0:0,ctr,
+      reach:iReach>=0?parseInt(c[iReach])||0:0,
+      followers:iFoll>=0?parseInt(c[iFoll])||0:0,
+      profileVisits:iVisit>=0?parseInt(c[iVisit])||0:0,
+      conversations:iConv>=0?parseInt(c[iConv])||0:0,
+    });
+  }
+  return{rows,nameCol};
+}
+
+const fN=n=>{if(!n&&n!==0)return"—";if(n>=1e6)return(n/1e6).toFixed(1)+"M";if(n>=1000)return(n/1000).toFixed(1)+"K";return Number(n).toLocaleString("pt-BR");};
+const fR=n=>"R$ "+(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const fU=n=>"$ "+(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const isoToday=()=>new Date().toISOString().slice(0,10);
+const applyRate=(rows,r)=>rows.map(x=>({...x,investedBRL:parseFloat((x.investedUSD*r).toFixed(2))}));
+const L="#c6f135";
+const INTERVAL=5*60;
+const fmtCD=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
+
+function Donut({value,max,color=L,size=110,stroke=11,label,sub}){
+  const [v,setV]=useState(0);
+  useEffect(()=>{const t=setTimeout(()=>setV(value),150);return()=>clearTimeout(t);},[value]);
+  const r=(size-stroke*2)/2,cx=size/2,cy=size/2;
+  const circ=2*Math.PI*r,pct=max>0?Math.min(v/max,1):0,dash=pct*circ,gap=circ-dash;
+  return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+      <div style={{position:"relative",width:size,height:size}}>
+        <svg width={size} height={size} style={{transform:"rotate(-90deg)",position:"absolute",top:0,left:0}}>
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,.07)" strokeWidth={stroke}/>
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth={stroke}
+            strokeDasharray={dash+" "+gap} strokeLinecap="round"
+            style={{transition:"stroke-dasharray 1.2s cubic-bezier(.34,1.1,.64,1)"}}/>
+        </svg>
+        <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+          <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:size*.18,fontWeight:700,color:"#fff",lineHeight:1}}>{label}</div>
+          {sub&&<div style={{fontSize:size*.1,color:"rgba(255,255,255,.4)",marginTop:2,textAlign:"center"}}>{sub}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Spark({data,color=L,width=120,height=36}){
+  if(!data||data.length<2)return null;
+  const mn=Math.min(...data),mx=Math.max(...data),rng=mx-mn||1;
+  const pts=data.map((v,i)=>(i/(data.length-1)*width)+","+(height-((v-mn)/rng)*(height-6)+3)).join(" ");
+  return(
+    <svg width={width} height={height} style={{overflow:"visible"}}>
+      <defs><style>{"@keyframes sk{to{stroke-dashoffset:0}}"}</style></defs>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+        style={{strokeDasharray:1000,strokeDashoffset:1000,animation:"sk 1.4s ease forwards .3s"}}/>
+    </svg>
+  );
+}
+
+const PC=[L,"#6366f1","#ec4899","#f59e0b","#14b8a6","#f472b6","#8b5cf6","#fb923c"];
+function PieChart({items,dataKey,fmtVal}){
+  const [mounted,setMounted]=useState(false);const [hov,setHov]=useState(null);
+  useEffect(()=>{const t=setTimeout(()=>setMounted(true),100);return()=>clearTimeout(t);},[items]);
+  const data=[...items].sort((a,b)=>b[dataKey]-a[dataKey]).slice(0,6);
+  const total=data.reduce((s,d)=>s+d[dataKey],0);
+  if(!total)return React.createElement("div",{style:{padding:20,color:"rgba(255,255,255,.2)",fontSize:11,textAlign:"center"}},"Sem dados");
+  const cx=70,cy=70,R=62,ri=34;let ang=-Math.PI/2;
+  const slices=data.map((d,i)=>{
+    const pct=d[dataKey]/total,a0=ang,a1=ang+pct*Math.PI*2;ang=a1;
+    const large=pct>.5?1:0;
+    const p="M"+(cx+ri*Math.cos(a0))+","+(cy+ri*Math.sin(a0))+" L"+(cx+R*Math.cos(a0))+","+(cy+R*Math.sin(a0))+" A"+R+","+R+",0,"+large+",1,"+(cx+R*Math.cos(a1))+","+(cy+R*Math.sin(a1))+" L"+(cx+ri*Math.cos(a1))+","+(cy+ri*Math.sin(a1))+" A"+ri+","+ri+",0,"+large+",0,"+(cx+ri*Math.cos(a0))+","+(cy+ri*Math.sin(a0))+"Z";
+    return{p,color:PC[i%PC.length],pct,d,i};
+  });
+  const act=hov!==null?slices[hov]:null;
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:12}}>
+      <svg width={140} height={140} style={{flexShrink:0,overflow:"visible"}}>
+        <defs><style>{"@keyframes ps{from{opacity:0;transform:rotate(-90deg) scale(.5);transform-origin:70px 70px}to{opacity:1;transform:rotate(0) scale(1);transform-origin:70px 70px}}"}</style></defs>
+        {slices.map((s,i)=>(
+          <path key={i} d={s.p} fill={s.color}
+            style={{opacity:mounted?1:0,animation:mounted?"ps .7s cubic-bezier(.34,1.2,.64,1) "+(i*55)+"ms both":"none",
+              transform:hov===i?"scale(1.07)":"scale(1)",transformOrigin:"70px 70px",transition:"transform .15s",cursor:"pointer"}}
+            onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}/>
+        ))}
+        <circle cx={cx} cy={cy} r={ri-1} fill="#1a1a1a"/>
+        <text x={cx} y={cy-4} textAnchor="middle" fill="#fff" fontSize={act?12:10} fontWeight={700} fontFamily="Space Grotesk">{act?fmtVal(act.d[dataKey]):fmtVal(total)}</text>
+        <text x={cx} y={cy+10} textAnchor="middle" fill="rgba(255,255,255,.35)" fontSize={8}>{act?((act.pct*100).toFixed(0)+"%"):"total"}</text>
+      </svg>
+      <div style={{display:"flex",flexDirection:"column",gap:5,flex:1}}>
+        {slices.map((s,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:6,opacity:hov===null||hov===i?1:.4,transition:"opacity .15s",cursor:"pointer"}}
+            onMouseEnter={()=>setHov(i)} onMouseLeave={()=>setHov(null)}>
+            <div style={{width:7,height:7,borderRadius:2,background:s.color,flexShrink:0}}/>
+            <span style={{fontSize:9.5,color:"rgba(255,255,255,.5)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.d.post}</span>
+            <span style={{fontSize:9.5,fontWeight:700,color:s.color}}>{(s.pct*100).toFixed(0)+"%"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Funnel({items}){
+  const [go,setGo]=useState(false);
+  useEffect(()=>{const t=setTimeout(()=>setGo(true),100);return()=>clearTimeout(t);},[items]);
+  const reach=items.reduce((s,r)=>s+r.reach,0),vis=items.reduce((s,r)=>s+r.profileVisits,0),
+        cl=items.reduce((s,r)=>s+r.clicks,0),fo=items.reduce((s,r)=>s+r.followers,0),cv=items.reduce((s,r)=>s+r.conversations,0);
+  const stages=[
+    {l:"Alcance",v:reach,pct:100,c:L},
+    {l:"Visitas",v:vis,pct:reach?vis/reach*100:0,c:"#6366f1"},
+    {l:"Cliques",v:cl,pct:reach?cl/reach*100:0,c:"#ec4899"},
+    {l:"Seguidores",v:fo,pct:reach?fo/reach*100:0,c:"#f59e0b"},
+    {l:"Conversas",v:cv,pct:reach?cv/reach*100:0,c:"#f472b6"},
+  ];
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:7}}>
+      {stages.map((s,i)=>(
+        <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{fontSize:9,color:"rgba(255,255,255,.4)",width:60,textAlign:"right",flexShrink:0}}>{s.l}</div>
+          <div style={{flex:1,height:22,background:"rgba(255,255,255,.05)",borderRadius:5,overflow:"hidden",position:"relative"}}>
+            <div style={{position:"absolute",left:0,top:0,height:"100%",
+              width:go?Math.max(s.pct,3)+"%":"0%",
+              background:"linear-gradient(90deg,"+s.c+","+s.c+"77)",borderRadius:5,
+              transition:"width 1s cubic-bezier(.34,1.1,.64,1) "+(i*100)+"ms",
+              display:"flex",alignItems:"center",paddingLeft:7}}>
+              <span style={{fontSize:9,fontWeight:700,color:"#000",whiteSpace:"nowrap"}}>{fN(s.v)}</span>
+            </div>
+          </div>
+          <div style={{fontSize:9,fontWeight:700,color:s.c,width:32,textAlign:"right",flexShrink:0}}>{i===0?"100%":s.pct.toFixed(1)+"%"}</div>
+        </div>
+      ))}
+      <div style={{marginTop:4,padding:"5px 8px",borderRadius:6,background:"rgba(198,241,53,.06)",border:"1px solid rgba(198,241,53,.15)",display:"flex",justifyContent:"space-between"}}>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)"}}>Conversão alcance→seguidor</span>
+        <span style={{fontSize:10,fontWeight:700,color:L}}>{reach?(fo/reach*100).toFixed(2)+"%":"—"}</span>
+      </div>
+    </div>
+  );
+}
+
+function HBar({items,dataKey,color,fmtVal}){
+  const [go,setGo]=useState(false);
+  useEffect(()=>{const t=setTimeout(()=>setGo(true),100);return()=>clearTimeout(t);},[items]);
+  const sorted=[...items].sort((a,b)=>b[dataKey]-a[dataKey]).slice(0,6);
+  const mx=Math.max(...sorted.map(d=>d[dataKey]),1);
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:7}}>
+      {sorted.map((d,i)=>(
+        <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{fontSize:9,color:"rgba(255,255,255,.4)",width:72,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right",flexShrink:0}} title={d.post}>{d.post}</div>
+          <div style={{flex:1,height:18,background:"rgba(255,255,255,.05)",borderRadius:4,overflow:"hidden"}}>
+            <div style={{width:go?(d[dataKey]/mx*100)+"%":"0%",height:"100%",
+              background:"linear-gradient(90deg,"+color+","+color+"66)",borderRadius:4,
+              transition:"width .9s cubic-bezier(.34,1.2,.64,1) "+(i*70)+"ms"}}/>
+          </div>
+          <div style={{fontSize:9,fontWeight:700,color,width:36,textAlign:"right",flexShrink:0}}>{fmtVal(d[dataKey])}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MetaModal({onClose,onSave,savedToken,savedAccId}){
+  const [tok,setTok]=useState(savedToken||"");
+  const [acc,setAcc]=useState(savedAccId||"");
+  const inp={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:12,outline:"none",fontFamily:"monospace"};
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+      <div style={{background:"#1a1a1a",borderRadius:20,padding:28,width:"100%",maxWidth:480,border:"1px solid rgba(255,255,255,.1)"}} onClick={e=>e.stopPropagation()}>
+        <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:18,fontWeight:700,marginBottom:4}}>Conectar Meta API</div>
+        <div style={{fontSize:12,color:"rgba(255,255,255,.4)",marginBottom:18,lineHeight:1.6}}>Seus impulsionamentos do Instagram serão buscados automaticamente a cada 5 minutos.</div>
+        <div style={{background:"rgba(198,241,53,.05)",border:"1px solid rgba(198,241,53,.15)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
+          <div style={{fontSize:11,fontWeight:700,color:L,marginBottom:8}}>Como gerar o Access Token:</div>
+          {["Acesse: developers.facebook.com/tools/explorer","Selecione o app INFLU LAB TRACKER","Adicione permissões: ads_read + read_insights","Clique em Gerar token de acesso","Copie e cole abaixo"].map((s,i)=>(
+            <div key={i} style={{display:"flex",gap:8,marginBottom:4,alignItems:"flex-start"}}>
+              <span style={{width:16,height:16,borderRadius:"50%",background:"rgba(198,241,53,.15)",color:L,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{i+1}</span>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.6)",lineHeight:1.4}}>{s}</span>
+            </div>
+          ))}
+          <div style={{marginTop:8,fontSize:10,color:"rgba(255,255,255,.3)"}}>Ad Account ID: business.facebook.com → Configurações → Contas de Anúncios → ID (formato: act_XXXXXXXXXX)</div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:18}}>
+          <div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.4)",marginBottom:4,fontWeight:600}}>ACCESS TOKEN</div>
+            <input value={tok} onChange={e=>setTok(e.target.value)} placeholder="EAAxxxxxxxxxxxxx..." style={inp}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.4)",marginBottom:4,fontWeight:600}}>AD ACCOUNT ID</div>
+            <input value={acc} onChange={e=>setAcc(e.target.value)} placeholder="act_XXXXXXXXXX" style={inp}/>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={onClose} style={{flex:1,padding:10,borderRadius:10,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"rgba(255,255,255,.5)",cursor:"pointer",fontSize:13,fontWeight:600}}>Cancelar</button>
+          <button onClick={()=>onSave(tok.trim(),acc.trim())} style={{flex:2,padding:10,borderRadius:10,background:L,border:"none",color:"#111",cursor:"pointer",fontSize:13,fontWeight:700}}>Salvar e Conectar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [rate,setRate]=useState(5.31);
+  const [rateLabel,setRateLabel]=useState("...");
+  const [refreshing,setRefreshing]=useState(false);
+  const [rawData,setRawData]=useState(()=>applyRate(DEMO,5.31));
+  const [usingDemo,setUsingDemo]=useState(true);
+  const [nameCol,setNameCol]=useState(null);
+  const [dragOver,setDragOver]=useState(false);
+  const [toast,setToast]=useState(null);
+  const [tab,setTab]=useState("overview");
+  const [sortBy,setSortBy]=useState("investedBRL");
+  const [sortDir,setSortDir]=useState("desc");
+  const [search,setSearch]=useState("");
+  const [dateFrom,setDateFrom]=useState(isoToday());
+  const [dateTo,setDateTo]=useState(isoToday());
+  const [quick,setQuick]=useState("today");
+  const [sideActive,setSideActive]=useState("overview");
+  const [sideOpen,setSideOpen]=useState(true);
+  const [isMobile,setIsMobile]=useState(false);
+  const [metaToken,setMetaToken]=useState(()=>localStorage.getItem("influ_token")||"");
+  const [metaAccId,setMetaAccId]=useState(()=>localStorage.getItem("influ_acc")||"");
+  const [showConfig,setShowConfig]=useState(false);
+  const [autoActive,setAutoActive]=useState(false);
+  const [fetchingMeta,setFetchingMeta]=useState(false);
+  const [lastUpdate,setLastUpdate]=useState(null);
+  const [countdown,setCountdown]=useState(INTERVAL);
+  const [ddOpen,setDdOpen]=useState(false);
+  const autoRef=useRef(null);const countRef=useRef(null);
+
+  const toast$=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast(null),4500);};
+
+  useEffect(()=>{
+    const check=()=>{const m=window.innerWidth<768;setIsMobile(m);if(m)setSideOpen(false);else setSideOpen(true);};
+    check();window.addEventListener("resize",check);return()=>window.removeEventListener("resize",check);
+  },[]);
+
+  const applyNewRate=(v,src)=>{setRate(v);setRateLabel(src);setRawData(prev=>applyRate(prev,v));};
+  const fetchRate=useCallback((silent=false)=>{
+    setRefreshing(true);
+    const done=(v,src)=>{applyNewRate(v,src);if(!silent)toast$("Cotação: R$ "+v.toFixed(2)+"/USD");setRefreshing(false);};
+    const fail=()=>{setRateLabel("fixo");setRefreshing(false);};
+    fetch("https://economia.awesomeapi.com.br/json/last/USD-BRL")
+      .then(r=>r.json()).then(d=>{const v=parseFloat(d&&d.USDBRL&&d.USDBRL.bid);if(v>1){done(v,"ao vivo");return;}throw 0;})
+      .catch(()=>fetch("https://open.er-api.com/v6/latest/USD")
+        .then(r=>r.json()).then(d=>{const v=d&&d.rates&&d.rates.BRL;if(v>1){done(v,"ao vivo");return;}throw 0;})
+        .catch(fail));
+  },[]);
+  useEffect(()=>{fetchRate(true);},[]);
+
+  const fetchMetaData=useCallback((token,accId,silent=false)=>{
+    if(!token||!accId)return;
+    setFetchingMeta(true);
+    const since=dateFrom||isoToday();
+    const until=dateTo||isoToday();
+    const fields="campaign_name,ad_name,spend,clicks,ctr,reach,actions,date_start";
+    const timeRange=JSON.stringify({since:since,until:until});
+    const url="https://graph.facebook.com/v19.0/"+accId+"/insights"
+      +"?fields="+encodeURIComponent(fields)
+      +"&time_range="+encodeURIComponent(timeRange)
+      +"&level=ad&limit=100"
+      +"&access_token="+token;
+    fetch(url)
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.error)throw new Error(d.error.message||JSON.stringify(d.error));
+        const data=d.data||[];
+        if(!data.length)throw new Error("Sem campanhas no período. Selecione Máximo no filtro.");
+        const getA=(actions,type)=>parseInt((actions&&actions.find(a=>a.action_type===type)&&actions.find(a=>a.action_type===type).value)||"0")||0;
+        const rows=data.map((item,i)=>{
+          const usd=parseFloat(item.spend||"0")||0;
+          const actions=item.actions||[];
+          const name=(item.ad_name||item.campaign_name||"Campanha "+(i+1)).replace(/^Post do Instagram:\s*/i,"").trim();
+          return{id:i,post:name,rawPost:item.ad_name||name,date:item.date_start||since,
+            investedUSD:usd,investedBRL:parseFloat((usd*rate).toFixed(2)),
+            clicks:parseInt(item.clicks||"0")||0,
+            ctr:parseFloat(parseFloat(item.ctr||"0").toFixed(2)),
+            reach:parseInt(item.reach||"0")||0,
+            followers:getA(actions,"like")+getA(actions,"follow"),
+            profileVisits:getA(actions,"view_content")||0,
+            conversations:getA(actions,"onsite_conversion.messaging_conversation_started_7d"),
+          };
+        });
+        setRawData(rows);setUsingDemo(false);setNameCol("Meta API");
+        setLastUpdate(new Date());setCountdown(INTERVAL);
+        if(!silent)toast$("✓ "+rows.length+" campanhas atualizadas");
+      })
+      .catch(e=>{if(!silent)toast$("Erro: "+e.message,"err");})
+      .finally(()=>setFetchingMeta(false));
+  },[rate,dateFrom,dateTo]);
+
+  const stopAuto=useCallback(()=>{clearInterval(autoRef.current);clearInterval(countRef.current);setAutoActive(false);},[]);
+  const startAuto=useCallback((token,accId)=>{
+    if(!token||!accId){toast$("Configure o Token e Ad Account ID","err");return;}
+    stopAuto();
+    fetchMetaData(token,accId,false);
+    autoRef.current=setInterval(()=>fetchMetaData(token,accId,true),INTERVAL*1000);
+    setCountdown(INTERVAL);
+    countRef.current=setInterval(()=>setCountdown(c=>c<=1?INTERVAL:c-1),1000);
+    setAutoActive(true);
+  },[fetchMetaData,stopAuto]);
+  useEffect(()=>()=>{clearInterval(autoRef.current);clearInterval(countRef.current);},[]);
+
+  const saveConfig=(token,accId)=>{
+    localStorage.setItem("influ_token",token);localStorage.setItem("influ_acc",accId);
+    setMetaToken(token);setMetaAccId(accId);setShowConfig(false);
+    startAuto(token,accId);
+  };
+
+  useEffect(()=>{
+    if(metaToken&&metaAccId){setTimeout(()=>startAuto(metaToken,metaAccId),1500);}
+  },[]);
+
+  const applyQ=k=>{
+    setQuick(k);const t=isoToday();
+    if(k==="all"){setDateFrom("");setDateTo("");return;}
+    if(k==="today"){setDateFrom(t);setDateTo(t);return;}
+    if(k==="yesterday"){const y=new Date();y.setDate(y.getDate()-1);const s=y.toISOString().slice(0,10);setDateFrom(s);setDateTo(s);return;}
+    if(k==="7"){const f=new Date();f.setDate(f.getDate()-7);setDateFrom(f.toISOString().slice(0,10));setDateTo(t);return;}
+    if(k==="month"){const f=new Date();f.setDate(1);setDateFrom(f.toISOString().slice(0,10));setDateTo(t);return;}
+    if(k==="lmonth"){const f=new Date();f.setDate(1);f.setMonth(f.getMonth()-1);setDateFrom(f.toISOString().slice(0,10));setDateTo(new Date(f.getFullYear(),f.getMonth()+1,0).toISOString().slice(0,10));return;}
+  };
+
+  const loadCSV=useCallback(file=>{
+    if(!file)return;
+    const rd=new FileReader();
+    rd.onload=e=>{
+      const{rows,nameCol:nc}=parseCSVText(e.target.result,rate);
+      if(!rows.length){toast$("CSV sem dados.","err");return;}
+      setRawData(rows);setUsingDemo(false);setNameCol(nc);
+      const t=isoToday();setDateFrom(t);setDateTo(t);setQuick("today");
+      toast$(rows.length+" campanhas carregadas");
+    };
+    rd.readAsText(file,"UTF-8");
+  },[rate]);
+  const onDrop=useCallback(e=>{e.preventDefault();setDragOver(false);loadCSV(e.dataTransfer.files[0]);},[loadCSV]);
+
+  const df=useMemo(()=>rawData.filter(r=>{
+    if(!r.date)return true;
+    if(dateFrom&&r.date<dateFrom)return false;
+    if(dateTo&&r.date>dateTo)return false;
+    return true;
+  }),[rawData,dateFrom,dateTo]);
+
+  const T=useMemo(()=>{
+    const d=df,n=d.length||1;
+    const tU=d.reduce((s,r)=>s+r.investedUSD,0),tB=d.reduce((s,r)=>s+r.investedBRL,0);
+    const cl=d.reduce((s,r)=>s+r.clicks,0),re=d.reduce((s,r)=>s+r.reach,0);
+    const fo=d.reduce((s,r)=>s+r.followers,0),vi=d.reduce((s,r)=>s+r.profileVisits,0);
+    const cv=d.reduce((s,r)=>s+r.conversations,0);
+    const avgCTR=(d.reduce((s,r)=>s+r.ctr,0)/n).toFixed(2);
+    return{tU,tB,cl,re,fo,vi,cv,avgCTR,cpc:cl?tB/cl:0,cpf:fo?tB/fo:0,count:d.length};
+  },[df]);
+
+  const tableRows=useMemo(()=>{
+    let d=df.filter(r=>!search||r.post.toLowerCase().includes(search.toLowerCase()));
+    return[...d].sort((a,b)=>{const v=sortDir==="asc"?1:-1;return a[sortBy]===b[sortBy]?0:(a[sortBy]>b[sortBy]?1:-1)*v;});
+  },[df,search,sortBy,sortDir]);
+  const tSort=k=>{if(sortBy===k)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortBy(k);setSortDir("desc");}};
+  const topPost=useMemo(()=>df.length?[...df].sort((a,b)=>b.followers-a.followers)[0]:null,[df]);
+  const navItems=[{id:"overview",icon:"⊞",label:"Overview"},{id:"charts",icon:"◎",label:"Gráficos"},{id:"table",icon:"≡",label:"Campanhas"}];
+  const metaOk=!!(metaToken&&metaAccId);
+  const OPTS=[{k:"all",l:"Máximo"},{k:"today",l:"Hoje"},{k:"yesterday",l:"Ontem"},{k:"7",l:"Últimos 7 dias"},{k:"month",l:"Esse mês"},{k:"lmonth",l:"Mês passado"},{k:"custom",l:"Personalizado"}];
+  const ddLabel=(OPTS.find(o=>o.k===quick)||{l:"Hoje"}).l;
+
+  const card={background:"#1a1a1a",borderRadius:18,border:"1px solid rgba(255,255,255,.06)"};
+  const kv={fontFamily:"'Space Grotesk',sans-serif",fontSize:22,fontWeight:700,lineHeight:1.1};
+
+  return(
+    <div style={{display:"flex",minHeight:"100vh",background:"#111",fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#e8e8e8",position:"relative"}}>
+      <style>{`
+        .nb{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;background:transparent;color:rgba(255,255,255,.3);font-size:18px;transition:all .15s}
+        .nb.on{background:rgba(198,241,53,.15);color:#c6f135}
+        .nb:hover:not(.on){background:rgba(255,255,255,.07);color:rgba(255,255,255,.7)}
+        .th{cursor:pointer;user-select:none;white-space:nowrap;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:9px 10px;text-align:left;color:rgba(255,255,255,.28)}
+        .th:hover,.th.on{color:#c6f135}
+        .tr:hover{background:rgba(198,241,53,.04)}
+        .dz{border:1.5px dashed rgba(198,241,53,.25);border-radius:12px;padding:10px 14px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+        .dz.ov{border-color:#c6f135;background:rgba(198,241,53,.07)}
+        .rb{padding:7px 13px;border-radius:9px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.5);cursor:pointer;font-size:11px;font-weight:600;display:flex;align-items:center;gap:5px;transition:all .15s;white-space:nowrap}
+        .rb:hover{background:rgba(255,255,255,.1);color:#fff}
+        .rb:disabled{opacity:.35;cursor:default}
+        .sidebar{position:fixed;left:0;top:0;height:100vh;z-index:200;background:#161616;border-right:1px solid rgba(255,255,255,.06);display:flex;flex-direction:column;align-items:center;padding:20px 0;gap:6px;transition:transform .3s cubic-bezier(.34,1.1,.64,1);width:68px}
+        .sidebar.closed{transform:translateX(-100%)}
+        .sb-ov{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:199}
+        .bn{position:fixed;bottom:0;left:0;right:0;background:#161616;border-top:1px solid rgba(255,255,255,.07);display:flex;justify-content:space-around;padding:8px 0;z-index:300}
+        .toast{position:fixed;bottom:80px;right:16px;padding:10px 16px;border-radius:10px;font-size:12px;font-weight:500;z-index:1100;max-width:340px;animation:fu .3s ease}
+        @keyframes fu{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes sp{to{transform:rotate(360deg)}}
+        @keyframes pd{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.7)}}
+        @keyframes ddIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+        .spin{display:inline-block;animation:sp .8s linear infinite}
+        @media(max-width:900px){.g4,.g3,.g3b{grid-template-columns:1fr 1fr!important}}
+        @media(max-width:600px){.g4,.g3,.g2,.g3b{grid-template-columns:1fr!important}.toast{bottom:72px;right:12px;left:12px}}
+      `}</style>
+
+      {showConfig&&<MetaModal onClose={()=>setShowConfig(false)} onSave={saveConfig} savedToken={metaToken} savedAccId={metaAccId}/>}
+      {isMobile&&sideOpen&&<div className="sb-ov" onClick={()=>setSideOpen(false)}/>}
+
+      <div className={"sidebar"+(sideOpen?"":" closed")}>
+        <div style={{width:38,height:38,borderRadius:10,background:L,display:"flex",alignItems:"center",justifyContent:"center",marginBottom:16,fontSize:17,filter:"brightness(0)"}}>📸</div>
+        {navItems.map(n=>(
+          <button key={n.id} className={"nb"+(sideActive===n.id?" on":"")}
+            onClick={()=>{setSideActive(n.id);setTab(n.id);if(isMobile)setSideOpen(false);}} title={n.label}>{n.icon}</button>
+        ))}
+        <div style={{flex:1}}/>
+        <div style={{marginBottom:8,textAlign:"center",padding:"0 4px"}}>
+          <div style={{width:8,height:8,borderRadius:"50%",background:metaOk&&autoActive?L:"rgba(255,255,255,.2)",margin:"0 auto 4px",animation:autoActive?"pd 1.5s infinite":"none"}}/>
+          <div style={{fontSize:8,color:"rgba(255,255,255,.25)"}}>{metaOk?(autoActive?"ao vivo":"conectado"):"offline"}</div>
+        </div>
+        <button className="nb" onClick={()=>setSideOpen(false)} title="Fechar">←</button>
+        <div style={{fontSize:9,color:"rgba(255,255,255,.25)",textAlign:"center",padding:"0 4px",lineHeight:1.4,marginBottom:8}}>
+          <div style={{color:L,fontWeight:700,fontSize:11}}>{"R$"+rate.toFixed(2)}</div>
+          <div style={{fontSize:8}}>{"USD · "+rateLabel}</div>
+        </div>
+      </div>
+
+      <div style={{flex:1,overflow:"auto",padding:isMobile?"14px 14px 80px":"20px 22px",marginLeft:(!isMobile&&sideOpen)?68:0,transition:"margin-left .3s cubic-bezier(.34,1.1,.64,1)"}}>
+
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:10,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {!sideOpen&&<button onClick={()=>setSideOpen(true)} style={{width:36,height:36,borderRadius:10,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"rgba(255,255,255,.6)",cursor:"pointer",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"}}>☰</button>}
+            <div>
+              <div style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:700,fontSize:isMobile?16:20,letterSpacing:"-.3px"}}>
+                {"Influ Lab "}<span style={{color:L}}>Tracker</span>
+              </div>
+              {!isMobile&&<div style={{fontSize:11,color:"rgba(255,255,255,.3)",marginTop:1}}>
+                {usingDemo?"Demo":nameCol||"API"}{lastUpdate&&<span style={{color:"rgba(198,241,53,.5)"}}>{" · "+lastUpdate.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</span>}{!lastUpdate&&<span>{" · "+isoToday()}</span>}
+              </div>}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+            {!autoActive?(
+              <button onClick={()=>setShowConfig(true)} style={{padding:"7px 14px",borderRadius:10,
+                background:metaOk?"rgba(198,241,53,.12)":"rgba(255,255,255,.06)",
+                border:"1px solid "+(metaOk?"rgba(198,241,53,.35)":"rgba(255,255,255,.1)"),
+                color:metaOk?L:"rgba(255,255,255,.5)",cursor:"pointer",fontSize:12,fontWeight:700,display:"flex",alignItems:"center",gap:6,whiteSpace:"nowrap"}}>
+                {metaOk?"🔗 Reconfigurar":"🔌 Conectar Meta API"}
+              </button>
+            ):(
+              <div style={{display:"flex",alignItems:"center",gap:7}}>
+                <div style={{display:"flex",alignItems:"center",gap:5,padding:"6px 12px",borderRadius:10,background:"rgba(198,241,53,.08)",border:"1px solid rgba(198,241,53,.2)"}}>
+                  <span style={{width:6,height:6,borderRadius:"50%",background:L,display:"inline-block",animation:"pd 1.5s ease-in-out infinite"}}/>
+                  <span style={{fontSize:12,fontWeight:700,color:L,fontFamily:"'Space Grotesk',sans-serif"}}>{fmtCD(countdown)}</span>
+                  {fetchingMeta&&<span style={{fontSize:10,color:"rgba(198,241,53,.6)"}}>sync...</span>}
+                </div>
+                <button onClick={()=>fetchMetaData(metaToken,metaAccId,false)} disabled={fetchingMeta} className="rb" style={{padding:"6px 10px"}}>↻</button>
+                <button onClick={stopAuto} style={{padding:"6px 10px",borderRadius:9,background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",cursor:"pointer",fontSize:11,fontWeight:600}}>■</button>
+              </div>
+            )}
+            <label htmlFor="csv-up">
+              <div className={"dz"+(dragOver?" ov":"")} onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop}>
+                <span style={{fontSize:13}}>📂</span><span style={{fontSize:11,color:"rgba(255,255,255,.4)",fontWeight:500}}>CSV</span>
+              </div>
+            </label>
+            <input id="csv-up" type="file" accept=".csv,.txt" onChange={e=>loadCSV(e.target.files[0])}/>
+            <button className="rb" onClick={()=>fetchRate(false)} disabled={refreshing}>
+              <span className={refreshing?"spin":""} style={{fontSize:13}}>↻</span>{!isMobile&&" Câmbio"}
+            </button>
+          </div>
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Período de Visualização</div>
+          <div style={{position:"relative",maxWidth:260,zIndex:50}}>
+            <button onClick={()=>setDdOpen(o=>!o)} style={{width:"100%",padding:"9px 36px 9px 14px",borderRadius:12,background:"#1a1a1a",border:"1px solid "+(ddOpen?L:"rgba(255,255,255,.1)"),color:"#e8e8e8",fontSize:13,fontWeight:500,textAlign:"left",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",outline:"none"}}>
+              <span>{ddLabel}</span>
+              <span style={{color:"rgba(255,255,255,.4)",fontSize:11,transition:"transform .2s",display:"inline-block",transform:ddOpen?"rotate(180deg)":"rotate(0deg)"}}>▾</span>
+            </button>
+            {ddOpen&&(
+              <div style={{position:"absolute",top:"calc(100% + 6px)",left:0,right:0,background:"#1a1a1a",border:"1px solid rgba(255,255,255,.1)",borderRadius:12,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,.6)",zIndex:100,animation:"ddIn .15s ease"}}>
+                <div style={{padding:"6px 0"}}>
+                  {OPTS.map(o=>(
+                    <button key={o.k} onClick={()=>{setDdOpen(false);applyQ(o.k);}}
+                      style={{width:"100%",padding:"10px 16px",background:quick===o.k?"rgba(198,241,53,.12)":"transparent",border:"none",color:quick===o.k?L:"rgba(255,255,255,.7)",fontSize:13,fontWeight:quick===o.k?600:400,textAlign:"left",cursor:"pointer",display:"block",outline:"none"}}
+                      onMouseEnter={e=>{if(quick!==o.k)e.currentTarget.style.background="rgba(255,255,255,.05)";}}
+                      onMouseLeave={e=>{if(quick!==o.k)e.currentTarget.style.background="transparent";}}>
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          {quick==="custom"&&(
+            <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center",flexWrap:"wrap"}}>
+              <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{padding:"7px 10px",borderRadius:8,background:"#1a1a1a",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:12,outline:"none"}}/>
+              <span style={{color:"rgba(255,255,255,.25)"}}>→</span>
+              <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{padding:"7px 10px",borderRadius:8,background:"#1a1a1a",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:12,outline:"none"}}/>
+            </div>
+          )}
+          <div style={{marginTop:6,fontSize:11,color:"rgba(255,255,255,.25)"}}>
+            <span style={{color:L,fontWeight:700}}>{T.count}</span>{" campanha"+(T.count!==1?"s":"")+" no período"}
+          </div>
+        </div>
+
+        {tab==="overview"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div className="g4" style={{display:"grid",gridTemplateColumns:"2fr 1.4fr 1.4fr 1.4fr",gap:14}}>
+              <div style={{...card,padding:"20px 22px",display:"flex",flexDirection:"column",gap:6,position:"relative",overflow:"hidden"}}>
+                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Total Investido</div>
+                <div style={{...kv,fontSize:isMobile?26:32,color:L}}>{fR(T.tB)}</div>
+                <div style={{fontSize:11,color:"rgba(255,255,255,.35)"}}>{fU(T.tU)+" · R$"+rate.toFixed(2)+"/USD"}</div>
+                <div style={{marginTop:6}}><Spark data={df.map(r=>r.investedBRL)} color={L} width={180} height={36}/></div>
+                <div style={{position:"absolute",right:-20,top:-20,width:100,height:100,borderRadius:"50%",background:"rgba(198,241,53,.04)",pointerEvents:"none"}}/>
+              </div>
+              {[
+                {label:"Seguidores Ganhos",val:"+"+fN(T.fo),sub:"Custo: "+fR(T.cpf)+"/seg",color:L,data:df.map(r=>r.followers)},
+                {label:"Cliques no Link",val:fN(T.cl),sub:"CTR: "+T.avgCTR+"%",color:"#6366f1",data:df.map(r=>r.clicks)},
+                {label:"Alcance Total",val:fN(T.re),sub:"Visitas: "+fN(T.vi),color:"#ec4899",data:df.map(r=>r.reach)},
+              ].map(k=>(
+                <div key={k.label} style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",gap:4}}>
+                  <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>{k.label}</div>
+                  <div style={{...kv,color:k.color,marginTop:4}}>{k.val}</div>
+                  <div style={{fontSize:10,color:"rgba(255,255,255,.3)",marginTop:2}}>{k.sub}</div>
+                  <div style={{marginTop:"auto",paddingTop:8}}><Spark data={k.data} color={k.color} width={120} height={28}/></div>
+                </div>
+              ))}
+            </div>
+            <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1.5fr",gap:14}}>
+              <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",alignSelf:"flex-start"}}>CTR Médio</div>
+                <Donut value={parseFloat(T.avgCTR)} max={10} color={L} size={110} stroke={11} label={T.avgCTR+"%"} sub="de 10% max"/>
+              </div>
+              <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",alignSelf:"flex-start"}}>Conversas</div>
+                <Donut value={T.cv} max={Math.max(T.cv*1.5,1)} color="#f472b6" size={110} stroke={11} label={fN(T.cv)} sub={T.cv?fR(T.tB/T.cv)+"/conv":"—"}/>
+              </div>
+              {topPost&&(
+                <div style={{...card,padding:"18px 20px"}}>
+                  <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:10}}>🏆 Melhor Campanha</div>
+                  <div style={{fontSize:13,fontWeight:600,color:"#fff",marginBottom:10,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={topPost.rawPost}>{topPost.post}</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    {[{l:"Seguidores",v:"+"+topPost.followers,c:L},{l:"Investido",v:fR(topPost.investedBRL),c:"rgba(255,255,255,.7)"},{l:"Cliques",v:fN(topPost.clicks),c:"#6366f1"},{l:"CTR",v:topPost.ctr+"%",c:"#ec4899"}].map(m=>(
+                      <div key={m.l} style={{background:"rgba(255,255,255,.04)",borderRadius:8,padding:"8px 10px"}}>
+                        <div style={{fontSize:9,color:"rgba(255,255,255,.3)"}}>{m.l}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:m.c,marginTop:2}}>{m.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="g3b" style={{display:"grid",gridTemplateColumns:"1.3fr 1fr 1.3fr",gap:14}}>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Funil de Conversão</div><Funnel items={df}/></div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Visitas ao Perfil</div><HBar items={df} dataKey="profileVisits" color="#14b8a6" fmtVal={v=>fN(v)}/></div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:10}}>Top Campanhas · Cliques</div><HBar items={df} dataKey="clicks" color="#6366f1" fmtVal={v=>fN(v)}/></div>
+            </div>
+          </div>
+        )}
+
+        {tab==="charts"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Distribuição de Investimento</div><PieChart items={df} dataKey="investedBRL" fmtVal={v=>fR(v)}/></div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Distribuição de Seguidores</div><PieChart items={df} dataKey="followers" fmtVal={v=>"+"+fN(v)}/></div>
+            </div>
+            <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Funil de Conversão</div><Funnel items={df}/></div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Distribuição de Cliques</div><PieChart items={df} dataKey="clicks" fmtVal={v=>fN(v)}/></div>
+            </div>
+            <div className="g2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Conversas por Campanha</div><HBar items={df} dataKey="conversations" color="#f472b6" fmtVal={v=>fN(v)}/></div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Alcance por Campanha</div><HBar items={df} dataKey="reach" color="#ec4899" fmtVal={v=>fN(v)}/></div>
+            </div>
+          </div>
+        )}
+
+        {tab==="table"&&(
+          <div style={{...card,padding:"18px 20px"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+              <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Detalhes por Campanha</div>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Buscar..."
+                style={{padding:"5px 11px",borderRadius:8,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:11,outline:"none",width:180}}/>
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr style={{borderBottom:"1px solid rgba(255,255,255,.07)"}}>
+                    {[{k:"post",l:"Campanha"},{k:"date",l:"Data"},{k:"investedBRL",l:"Investido"},{k:"clicks",l:"Cliques"},{k:"ctr",l:"CTR"},{k:"reach",l:"Alcance"},{k:"profileVisits",l:"Visitas"},{k:"followers",l:"Seguidores"},{k:"conversations",l:"Conversas"}].map(c=>(
+                      <th key={c.k} className={"th"+(sortBy===c.k?" on":"")} onClick={()=>tSort(c.k)}>{c.l}{sortBy===c.k?(sortDir==="desc"?" ↓":" ↑"):""}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableRows.map(row=>(
+                    <tr key={row.id} className="tr" style={{borderBottom:"1px solid rgba(255,255,255,.04)"}}>
+                      <td style={{padding:"10px",fontWeight:500,color:"#e8e8e8",maxWidth:200,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={row.rawPost||row.post}>{row.post}</td>
+                      <td style={{padding:"10px",color:"rgba(255,255,255,.3)",whiteSpace:"nowrap"}}>{row.date}</td>
+                      <td style={{padding:"10px",whiteSpace:"nowrap"}}>
+                        <div style={{color:L,fontWeight:700}}>{fR(row.investedBRL)}</div>
+                        <div style={{color:"rgba(255,255,255,.22)",fontSize:9,marginTop:1}}>{fU(row.investedUSD)}</div>
+                      </td>
+                      <td style={{padding:"10px",color:"#6366f1",fontWeight:600}}>{fN(row.clicks)}</td>
+                      <td style={{padding:"10px"}}><span style={{padding:"2px 7px",borderRadius:20,fontSize:10,fontWeight:600,background:row.ctr>=3.5?"rgba(198,241,53,.12)":"rgba(99,102,241,.12)",color:row.ctr>=3.5?L:"#818cf8",border:"1px solid "+(row.ctr>=3.5?"rgba(198,241,53,.25)":"rgba(99,102,241,.25)")}}>{row.ctr+"%"}</span></td>
+                      <td style={{padding:"10px",color:"#ec4899"}}>{fN(row.reach)}</td>
+                      <td style={{padding:"10px",color:"#14b8a6"}}>{fN(row.profileVisits)}</td>
+                      <td style={{padding:"10px",color:L,fontWeight:700}}>{"+"+(row.followers||0)}</td>
+                      <td style={{padding:"10px",color:"#f472b6"}}>{row.conversations||0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {tableRows.length===0&&<div style={{textAlign:"center",padding:40,color:"rgba(255,255,255,.18)",fontSize:12}}>Nenhuma campanha no período</div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {isMobile&&(
+        <div className="bn">
+          {navItems.map(n=>(
+            <button key={n.id} onClick={()=>{setSideActive(n.id);setTab(n.id);}}
+              style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"4px 20px",border:"none",background:"transparent",cursor:"pointer",color:sideActive===n.id?L:"rgba(255,255,255,.35)",transition:"color .15s"}}>
+              <span style={{fontSize:20}}>{n.icon}</span>
+              <span style={{fontSize:9,fontWeight:600}}>{n.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {toast&&(
+        <div className="toast" style={{background:toast.type==="err"?"rgba(239,68,68,.92)":"rgba(26,26,26,.96)",border:"1px solid "+(toast.type==="err"?"rgba(239,68,68,.5)":"rgba(198,241,53,.3)"),color:toast.type==="err"?"#fca5a5":L}}>
+          {toast.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
