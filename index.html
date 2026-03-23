@@ -9,11 +9,89 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Firebase CDN -->
+<script type="module" id="firebase-init">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyC-evVkXSlWqgN0LOfkzkgeILGncUZP54U",
+    authDomain: "influ-lab-tracker.firebaseapp.com",
+    projectId: "influ-lab-tracker",
+    storageBucket: "influ-lab-tracker.firebasestorage.app",
+    messagingSenderId: "476979246053",
+    appId: "1:476979246053:web:5c260c065ae8ba591bb50c"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // Expõe funções globalmente para o Babel script acessar
+  window._fb = {
+    // Salva array de dados no Firestore (divide em chunks de 500kb)
+    async save(rows) {
+      try {
+        // Salva metadados + dados em chunks
+        const chunks = [];
+        const chunkSize = 200;
+        for (let i = 0; i < rows.length; i += chunkSize) {
+          chunks.push(rows.slice(i, i + chunkSize));
+        }
+        // Salva cada chunk
+        for (let i = 0; i < chunks.length; i++) {
+          await setDoc(doc(db, "tracker", "data_chunk_" + i), {
+            rows: chunks[i],
+            updatedAt: new Date().toISOString()
+          });
+        }
+        // Salva metadados (total de chunks)
+        await setDoc(doc(db, "tracker", "meta"), {
+          totalChunks: chunks.length,
+          totalRows: rows.length,
+          updatedAt: new Date().toISOString()
+        });
+        return true;
+      } catch(e) {
+        console.error("Firebase save error:", e);
+        return false;
+      }
+    },
+
+    // Carrega todos os dados do Firestore
+    async load() {
+      try {
+        const meta = await getDoc(doc(db, "tracker", "meta"));
+        if (!meta.exists()) return null;
+        const { totalChunks } = meta.data();
+        let allRows = [];
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = await getDoc(doc(db, "tracker", "data_chunk_" + i));
+          if (chunk.exists()) allRows = allRows.concat(chunk.data().rows || []);
+        }
+        return allRows;
+      } catch(e) {
+        console.error("Firebase load error:", e);
+        return null;
+      }
+    },
+
+    // Escuta mudanças em tempo real nos metadados
+    onUpdate(callback) {
+      return onSnapshot(doc(db, "tracker", "meta"), async () => {
+        const rows = await window._fb.load();
+        if (rows) callback(rows);
+      });
+    }
+  };
+
+  window._fbReady = true;
+  window.dispatchEvent(new Event("firebase-ready"));
+</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body,#root{height:100%;background:#111}
 ::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-thumb{background:rgba(198,241,53,.3);border-radius:2px}
+::-webkit-scrollbar-thumb{background:rgba(225,48,108,.3);border-radius:2px}
 input[type=file]{display:none}
 input[type=date]{color-scheme:dark}
 </style>
@@ -90,8 +168,11 @@ const fR=n=>"R$ "+(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2,maximum
 const fU=n=>"$ "+(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const isoToday=()=>new Date().toISOString().slice(0,10);
 const applyRate=(rows,r)=>rows.map(x=>({...x,investedBRL:parseFloat((x.investedUSD*r).toFixed(2))}));
-const L="#c6f135";
-const INTERVAL=5*60;
+const L="#E1306C";   // Instagram pink/magenta
+const L2="rgba(225,48,108,"; // para rgba
+const IG_GRAD="linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)";
+const IG_SOLID="#E1306C";
+const INTERVAL=1*60;
 const fmtCD=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 
 function Donut({value,max,color=L,size=110,stroke=11,label,sub}){
@@ -202,7 +283,7 @@ function Funnel({items}){
           <div style={{fontSize:9,fontWeight:700,color:s.c,width:32,textAlign:"right",flexShrink:0}}>{i===0?"100%":s.pct.toFixed(1)+"%"}</div>
         </div>
       ))}
-      <div style={{marginTop:4,padding:"5px 8px",borderRadius:6,background:"rgba(198,241,53,.06)",border:"1px solid rgba(198,241,53,.15)",display:"flex",justifyContent:"space-between"}}>
+      <div style={{marginTop:4,padding:"5px 8px",borderRadius:6,background:"rgba(225,48,108,.06)",border:"1px solid rgba(225,48,108,.15)",display:"flex",justifyContent:"space-between"}}>
         <span style={{fontSize:9,color:"rgba(255,255,255,.3)"}}>Conversão alcance→seguidor</span>
         <span style={{fontSize:10,fontWeight:700,color:L}}>{reach?(fo/reach*100).toFixed(2)+"%":"—"}</span>
       </div>
@@ -241,11 +322,11 @@ function MetaModal({onClose,onSave,savedToken,savedAccId}){
       <div style={{background:"#1a1a1a",borderRadius:20,padding:28,width:"100%",maxWidth:480,border:"1px solid rgba(255,255,255,.1)"}} onClick={e=>e.stopPropagation()}>
         <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:18,fontWeight:700,marginBottom:4}}>Conectar Meta API</div>
         <div style={{fontSize:12,color:"rgba(255,255,255,.4)",marginBottom:18,lineHeight:1.6}}>Seus impulsionamentos do Instagram serão buscados automaticamente a cada 5 minutos.</div>
-        <div style={{background:"rgba(198,241,53,.05)",border:"1px solid rgba(198,241,53,.15)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
+        <div style={{background:"rgba(225,48,108,.05)",border:"1px solid rgba(225,48,108,.15)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
           <div style={{fontSize:11,fontWeight:700,color:L,marginBottom:8}}>Como gerar o Access Token:</div>
           {["Acesse: developers.facebook.com/tools/explorer","Selecione o app INFLU LAB TRACKER","Adicione permissões: ads_read + read_insights","Clique em Gerar token de acesso","Copie e cole abaixo"].map((s,i)=>(
             <div key={i} style={{display:"flex",gap:8,marginBottom:4,alignItems:"flex-start"}}>
-              <span style={{width:16,height:16,borderRadius:"50%",background:"rgba(198,241,53,.15)",color:L,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{i+1}</span>
+              <span style={{width:16,height:16,borderRadius:"50%",background:"rgba(225,48,108,.15)",color:L,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{i+1}</span>
               <span style={{fontSize:11,color:"rgba(255,255,255,.6)",lineHeight:1.4}}>{s}</span>
             </div>
           ))}
@@ -274,8 +355,23 @@ function App(){
   const [rate,setRate]=useState(5.31);
   const [rateLabel,setRateLabel]=useState("...");
   const [refreshing,setRefreshing]=useState(false);
-  const [rawData,setRawData]=useState(()=>applyRate(DEMO,5.31));
-  const [usingDemo,setUsingDemo]=useState(true);
+  const [rawData,setRawData]=useState(()=>{
+    // Carrega histórico salvo, senão usa demo
+    try{
+      const saved=localStorage.getItem("influ_history");
+      if(saved){
+        const parsed=JSON.parse(saved);
+        if(parsed&&parsed.length>0) return parsed;
+      }
+    }catch(e){}
+    return applyRate(DEMO,5.31);
+  });
+  const [usingDemo,setUsingDemo]=useState(()=>{
+    try{
+      const saved=localStorage.getItem("influ_history");
+      return !saved||JSON.parse(saved).length===0;
+    }catch(e){return true;}
+  });
   const [nameCol,setNameCol]=useState(null);
   const [dragOver,setDragOver]=useState(false);
   const [toast,setToast]=useState(null);
@@ -299,7 +395,50 @@ function App(){
   const [ddOpen,setDdOpen]=useState(false);
   const autoRef=useRef(null);const countRef=useRef(null);
 
+  const [fbStatus,setFbStatus]=useState("conectando..."); // conectando / sincronizado / offline
+  const fbUnsubRef=useRef(null);
+
   const toast$=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast(null),4500);};
+
+  // ── Firebase: carrega dados compartilhados ao iniciar ─────────────────────
+  useEffect(()=>{
+    const init=async()=>{
+      // Espera Firebase ficar pronto
+      if(!window._fbReady){
+        await new Promise(res=>window.addEventListener("firebase-ready",res,{once:true}));
+      }
+      try{
+        const rows=await window._fb.load();
+        if(rows&&rows.length>0){
+          setRawData(rows);
+          setUsingDemo(false);
+          setFbStatus("sincronizado");
+          // Salva cópia local também
+          saveHistory(rows);
+        } else {
+          // Tenta carregar do localStorage como fallback
+          const local=loadHistory();
+          if(local&&local.length>0){
+            setRawData(local);setUsingDemo(false);
+          }
+          setFbStatus("vazio");
+        }
+      }catch(e){
+        setFbStatus("offline");
+      }
+
+      // Escuta mudanças em tempo real (outros dispositivos que subiram CSV)
+      fbUnsubRef.current=window._fb.onUpdate(rows=>{
+        if(rows&&rows.length>0){
+          setRawData(rows);setUsingDemo(false);
+          saveHistory(rows);
+          setFbStatus("sincronizado");
+        }
+      });
+    };
+    init();
+    return()=>{ if(fbUnsubRef.current)fbUnsubRef.current(); };
+  },[]);
 
   useEffect(()=>{
     const check=()=>{const m=window.innerWidth<768;setIsMobile(m);if(m)setSideOpen(false);else setSideOpen(true);};
@@ -363,6 +502,10 @@ function App(){
         });
         setRawData(rows);setUsingDemo(false);setNameCol("Meta API");
         setLastUpdate(new Date());setCountdown(INTERVAL);
+        // Salva no Firebase para todos os dispositivos
+        if(window._fb){
+          window._fb.save(rows).then(ok=>setFbStatus(ok?"sincronizado":"offline"));
+        }
         if(!silent)toast$("✓ "+rows.length+" campanhas atualizadas");
       })
       .catch(e=>{if(!silent)toast$("Erro: "+e.message,"err");})
@@ -393,6 +536,37 @@ function App(){
     if(metaToken&&metaAccId){setTimeout(()=>startAuto(metaToken,metaAccId),1500);}
   },[]);
 
+  // ── Histórico acumulativo ─────────────────────────────────────────────────
+  // Carrega histórico salvo do localStorage ao iniciar
+  const loadHistory=()=>{
+    try{
+      const saved=localStorage.getItem("influ_history");
+      return saved?JSON.parse(saved):[];
+    }catch(e){return[];}
+  };
+  const saveHistory=(rows)=>{
+    try{localStorage.setItem("influ_history",JSON.stringify(rows));}catch(e){}
+  };
+
+  // Merge inteligente: combina novo CSV com histórico, evita duplicatas por post+data
+  const mergeData=(existing,incoming)=>{
+    const map=new Map();
+    // Indexa existentes por chave única post+data
+    existing.forEach(r=>{
+      const key=(r.post||"")+"__"+(r.date||"");
+      map.set(key,r);
+    });
+    // Adiciona/substitui com novos (CSV mais recente tem prioridade)
+    incoming.forEach(r=>{
+      const key=(r.post||"")+"__"+(r.date||"");
+      map.set(key,{...r,id:map.size});
+    });
+    // Reconstrói array com IDs sequenciais e ordena por data
+    return Array.from(map.values())
+      .sort((a,b)=>((b.date||"")>(a.date||""))?1:-1)
+      .map((r,i)=>({...r,id:i}));
+  };
+
   const applyQ=k=>{
     setQuick(k);const t=isoToday();
     if(k==="all"){setDateFrom("");setDateTo("");return;}
@@ -409,9 +583,22 @@ function App(){
     rd.onload=e=>{
       const{rows,nameCol:nc}=parseCSVText(e.target.result,rate);
       if(!rows.length){toast$("CSV sem dados.","err");return;}
-      setRawData(rows);setUsingDemo(false);setNameCol(nc);
-      const t=isoToday();setDateFrom(t);setDateTo(t);setQuick("today");
-      toast$(rows.length+" campanhas carregadas");
+      // Carrega histórico e faz merge
+      const history=loadHistory();
+      const merged=mergeData(history,rows);
+      saveHistory(merged);
+      setRawData(merged);setUsingDemo(false);setNameCol(nc);
+      // Salva no Firebase para todos os dispositivos verem
+      if(window._fb){
+        setFbStatus("salvando...");
+        window._fb.save(merged).then(ok=>{
+          setFbStatus(ok?"sincronizado":"offline");
+          if(ok) toast$("✓ "+rows.length+" novos · "+merged.length+" total · sincronizado 🔥");
+          else    toast$("✓ "+merged.length+" salvos localmente (Firebase offline)");
+        });
+      } else {
+        toast$("✓ "+rows.length+" novos · "+merged.length+" no histórico");
+      }
     };
     rd.readAsText(file,"UTF-8");
   },[rate]);
@@ -452,13 +639,13 @@ function App(){
     <div style={{display:"flex",minHeight:"100vh",background:"#111",fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#e8e8e8",position:"relative"}}>
       <style>{`
         .nb{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;background:transparent;color:rgba(255,255,255,.3);font-size:18px;transition:all .15s}
-        .nb.on{background:rgba(198,241,53,.15);color:#c6f135}
+        .nb.on{background:rgba(225,48,108,.15);color:#E1306C}
         .nb:hover:not(.on){background:rgba(255,255,255,.07);color:rgba(255,255,255,.7)}
         .th{cursor:pointer;user-select:none;white-space:nowrap;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:9px 10px;text-align:left;color:rgba(255,255,255,.28)}
-        .th:hover,.th.on{color:#c6f135}
-        .tr:hover{background:rgba(198,241,53,.04)}
-        .dz{border:1.5px dashed rgba(198,241,53,.25);border-radius:12px;padding:10px 14px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px}
-        .dz.ov{border-color:#c6f135;background:rgba(198,241,53,.07)}
+        .th:hover,.th.on{color:#E1306C}
+        .tr:hover{background:rgba(225,48,108,.04)}
+        .dz{border:1.5px dashed rgba(225,48,108,.25);border-radius:12px;padding:10px 14px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+        .dz.ov{border-color:#E1306C;background:rgba(225,48,108,.07)}
         .rb{padding:7px 13px;border-radius:9px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.5);cursor:pointer;font-size:11px;font-weight:600;display:flex;align-items:center;gap:5px;transition:all .15s;white-space:nowrap}
         .rb:hover{background:rgba(255,255,255,.1);color:#fff}
         .rb:disabled{opacity:.35;cursor:default}
@@ -480,7 +667,7 @@ function App(){
       {isMobile&&sideOpen&&<div className="sb-ov" onClick={()=>setSideOpen(false)}/>}
 
       <div className={"sidebar"+(sideOpen?"":" closed")}>
-        <div style={{width:38,height:38,borderRadius:10,background:L,display:"flex",alignItems:"center",justifyContent:"center",marginBottom:16,fontSize:17,filter:"brightness(0)"}}>📸</div>
+        <div style={{width:38,height:38,borderRadius:10,background:IG_GRAD,display:"flex",alignItems:"center",justifyContent:"center",marginBottom:16,fontSize:17}}>📸</div>
         {navItems.map(n=>(
           <button key={n.id} className={"nb"+(sideActive===n.id?" on":"")}
             onClick={()=>{setSideActive(n.id);setTab(n.id);if(isMobile)setSideOpen(false);}} title={n.label}>{n.icon}</button>
@@ -503,41 +690,64 @@ function App(){
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             {!sideOpen&&<button onClick={()=>setSideOpen(true)} style={{width:36,height:36,borderRadius:10,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"rgba(255,255,255,.6)",cursor:"pointer",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"}}>☰</button>}
             <div>
-              <div style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:700,fontSize:isMobile?16:20,letterSpacing:"-.3px"}}>
-                {"Influ Lab "}<span style={{color:L}}>Tracker</span>
+              <div style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:700,fontSize:isMobile?16:20,letterSpacing:"-.3px",display:"flex",alignItems:"center",gap:6}}>
+                {"Influ Lab "}<span style={{background:IG_GRAD,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>Tracker</span>
+                {/* Selo verificado Instagram */}
+                <svg width="20" height="20" viewBox="0 0 20 20" style={{flexShrink:0}}>
+                  <defs>
+                    <linearGradient id="ig-seal" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#f09433"/>
+                      <stop offset="25%" stopColor="#e6683c"/>
+                      <stop offset="50%" stopColor="#dc2743"/>
+                      <stop offset="75%" stopColor="#cc2366"/>
+                      <stop offset="100%" stopColor="#bc1888"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M10 1.5L12.2 4.1L15.5 3.5L15.9 6.8L18.8 8.5L17.5 11.5L18.8 14.5L15.9 16.2L15.5 19.5L12.2 18.9L10 21.5L7.8 18.9L4.5 19.5L4.1 16.2L1.2 14.5L2.5 11.5L1.2 8.5L4.1 6.8L4.5 3.5L7.8 4.1Z" fill="url(#ig-seal)" transform="scale(0.87) translate(0.7,0)"/>
+                  <path d="M6.5 10L8.8 12.3L13.5 7.5" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
               </div>
               {!isMobile&&<div style={{fontSize:11,color:"rgba(255,255,255,.3)",marginTop:1}}>
-                {usingDemo?"Demo":nameCol||"API"}{lastUpdate&&<span style={{color:"rgba(198,241,53,.5)"}}>{" · "+lastUpdate.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</span>}{!lastUpdate&&<span>{" · "+isoToday()}</span>}
+                {usingDemo?"Demo":nameCol||"API"}{lastUpdate&&<span style={{color:"rgba(225,48,108,.5)"}}>{" · "+lastUpdate.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</span>}{!lastUpdate&&<span>{" · "+isoToday()}</span>}
+                {!usingDemo&&<span style={{color:"rgba(255,255,255,.2)"}}>{" · "+rawData.length+" registros"}</span>}
+                <span style={{
+                  marginLeft:6,
+                  color:fbStatus==="sincronizado"?"#4ade80":fbStatus==="salvando..."?"#f59e0b":"rgba(255,255,255,.3)"
+                }}>{"🔥 "+fbStatus}</span>
               </div>}
             </div>
           </div>
           <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
-            {!autoActive?(
-              <button onClick={()=>setShowConfig(true)} style={{padding:"7px 14px",borderRadius:10,
-                background:metaOk?"rgba(198,241,53,.12)":"rgba(255,255,255,.06)",
-                border:"1px solid "+(metaOk?"rgba(198,241,53,.35)":"rgba(255,255,255,.1)"),
-                color:metaOk?L:"rgba(255,255,255,.5)",cursor:"pointer",fontSize:12,fontWeight:700,display:"flex",alignItems:"center",gap:6,whiteSpace:"nowrap"}}>
-                {metaOk?"🔗 Reconfigurar":"🔌 Conectar Meta API"}
-              </button>
-            ):(
-              <div style={{display:"flex",alignItems:"center",gap:7}}>
-                <div style={{display:"flex",alignItems:"center",gap:5,padding:"6px 12px",borderRadius:10,background:"rgba(198,241,53,.08)",border:"1px solid rgba(198,241,53,.2)"}}>
-                  <span style={{width:6,height:6,borderRadius:"50%",background:L,display:"inline-block",animation:"pd 1.5s ease-in-out infinite"}}/>
-                  <span style={{fontSize:12,fontWeight:700,color:L,fontFamily:"'Space Grotesk',sans-serif"}}>{fmtCD(countdown)}</span>
-                  {fetchingMeta&&<span style={{fontSize:10,color:"rgba(198,241,53,.6)"}}>sync...</span>}
-                </div>
-                <button onClick={()=>fetchMetaData(metaToken,metaAccId,false)} disabled={fetchingMeta} className="rb" style={{padding:"6px 10px"}}>↻</button>
-                <button onClick={stopAuto} style={{padding:"6px 10px",borderRadius:9,background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",cursor:"pointer",fontSize:11,fontWeight:600}}>■</button>
-              </div>
-            )}
-            <label htmlFor="csv-up">
-              <div className={"dz"+(dragOver?" ov":"")} onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop}>
-                <span style={{fontSize:13}}>📂</span><span style={{fontSize:11,color:"rgba(255,255,255,.4)",fontWeight:500}}>CSV</span>
-              </div>
-            </label>
-            <input id="csv-up" type="file" accept=".csv,.txt" onChange={e=>loadCSV(e.target.files[0])}/>
-            <button className="rb" onClick={()=>fetchRate(false)} disabled={refreshing}>
-              <span className={refreshing?"spin":""} style={{fontSize:13}}>↻</span>{!isMobile&&" Câmbio"}
+            {/* Indicador Firebase ao vivo */}
+            <div style={{display:"flex",alignItems:"center",gap:5,padding:"6px 12px",borderRadius:10,
+              background:fbStatus==="sincronizado"?"rgba(225,48,108,.08)":"rgba(255,255,255,.04)",
+              border:"1px solid "+(fbStatus==="sincronizado"?"rgba(225,48,108,.2)":"rgba(255,255,255,.08)")}}>
+              <span style={{width:6,height:6,borderRadius:"50%",display:"inline-block",
+                background:fbStatus==="sincronizado"?L:fbStatus==="salvando..."?"#f59e0b":"rgba(255,255,255,.2)",
+                animation:fbStatus==="sincronizado"?"pd 2s ease-in-out infinite":"none"}}/>
+              <span style={{fontSize:11,fontWeight:600,color:fbStatus==="sincronizado"?L:fbStatus==="salvando..."?"#f59e0b":"rgba(255,255,255,.3)"}}>
+                {fbStatus==="sincronizado"?"ao vivo":fbStatus==="salvando..."?"salvando...":fbStatus==="conectando..."?"conectando...":"offline"}
+              </span>
+              {lastUpdate&&<span style={{fontSize:10,color:"rgba(255,255,255,.3)"}}>
+                {" · "+lastUpdate.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+              </span>}
+            </div>
+            {/* Botão único: Atualizar */}
+            <button className="rb" onClick={async()=>{
+              toast$("Atualizando...");
+              if(window._fb){
+                const rows=await window._fb.load();
+                if(rows&&rows.length>0){
+                  setRawData(rows);setUsingDemo(false);
+                  setLastUpdate(new Date());setFbStatus("sincronizado");
+                  toast$("✓ "+rows.length+" campanhas atualizadas");
+                } else {
+                  toast$("Sem dados no Firebase ainda","err");
+                }
+              }
+            }} disabled={refreshing}>
+              <span className={refreshing?"spin":""} style={{fontSize:14}}>↻</span>
+              {!isMobile&&" Atualizar"}
             </button>
           </div>
         </div>
@@ -554,7 +764,7 @@ function App(){
                 <div style={{padding:"6px 0"}}>
                   {OPTS.map(o=>(
                     <button key={o.k} onClick={()=>{setDdOpen(false);applyQ(o.k);}}
-                      style={{width:"100%",padding:"10px 16px",background:quick===o.k?"rgba(198,241,53,.12)":"transparent",border:"none",color:quick===o.k?L:"rgba(255,255,255,.7)",fontSize:13,fontWeight:quick===o.k?600:400,textAlign:"left",cursor:"pointer",display:"block",outline:"none"}}
+                      style={{width:"100%",padding:"10px 16px",background:quick===o.k?"rgba(225,48,108,.12)":"transparent",border:"none",color:quick===o.k?L:"rgba(255,255,255,.7)",fontSize:13,fontWeight:quick===o.k?600:400,textAlign:"left",cursor:"pointer",display:"block",outline:"none"}}
                       onMouseEnter={e=>{if(quick!==o.k)e.currentTarget.style.background="rgba(255,255,255,.05)";}}
                       onMouseLeave={e=>{if(quick!==o.k)e.currentTarget.style.background="transparent";}}>
                       {o.l}
@@ -581,10 +791,10 @@ function App(){
             <div className="g4" style={{display:"grid",gridTemplateColumns:"2fr 1.4fr 1.4fr 1.4fr",gap:14}}>
               <div style={{...card,padding:"20px 22px",display:"flex",flexDirection:"column",gap:6,position:"relative",overflow:"hidden"}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Total Investido</div>
-                <div style={{...kv,fontSize:isMobile?26:32,color:L}}>{fR(T.tB)}</div>
+                <div style={{...kv,fontSize:isMobile?26:32,background:IG_GRAD,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>{fR(T.tB)}</div>
                 <div style={{fontSize:11,color:"rgba(255,255,255,.35)"}}>{fU(T.tU)+" · R$"+rate.toFixed(2)+"/USD"}</div>
-                <div style={{marginTop:6}}><Spark data={df.map(r=>r.investedBRL)} color={L} width={180} height={36}/></div>
-                <div style={{position:"absolute",right:-20,top:-20,width:100,height:100,borderRadius:"50%",background:"rgba(198,241,53,.04)",pointerEvents:"none"}}/>
+                <div style={{marginTop:6}}><Spark data={df.map(r=>r.investedBRL)} color={IG_SOLID} width={180} height={36}/></div>
+                <div style={{position:"absolute",right:-20,top:-20,width:100,height:100,borderRadius:"50%",background:"rgba(225,48,108,.04)",pointerEvents:"none"}}/>
               </div>
               {[
                 {label:"Seguidores Ganhos",val:"+"+fN(T.fo),sub:"Custo: "+fR(T.cpf)+"/seg",color:L,data:df.map(r=>r.followers)},
@@ -602,7 +812,7 @@ function App(){
             <div className="g3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1.5fr",gap:14}}>
               <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",alignSelf:"flex-start"}}>CTR Médio</div>
-                <Donut value={parseFloat(T.avgCTR)} max={10} color={L} size={110} stroke={11} label={T.avgCTR+"%"} sub="de 10% max"/>
+                <Donut value={parseFloat(T.avgCTR)} max={10} color={IG_SOLID} size={110} stroke={11} label={T.avgCTR+"%"} sub="de 10% max"/>
               </div>
               <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",alignSelf:"flex-start"}}>Conversas</div>
@@ -674,7 +884,7 @@ function App(){
                         <div style={{color:"rgba(255,255,255,.22)",fontSize:9,marginTop:1}}>{fU(row.investedUSD)}</div>
                       </td>
                       <td style={{padding:"10px",color:"#6366f1",fontWeight:600}}>{fN(row.clicks)}</td>
-                      <td style={{padding:"10px"}}><span style={{padding:"2px 7px",borderRadius:20,fontSize:10,fontWeight:600,background:row.ctr>=3.5?"rgba(198,241,53,.12)":"rgba(99,102,241,.12)",color:row.ctr>=3.5?L:"#818cf8",border:"1px solid "+(row.ctr>=3.5?"rgba(198,241,53,.25)":"rgba(99,102,241,.25)")}}>{row.ctr+"%"}</span></td>
+                      <td style={{padding:"10px"}}><span style={{padding:"2px 7px",borderRadius:20,fontSize:10,fontWeight:600,background:row.ctr>=3.5?"rgba(225,48,108,.12)":"rgba(99,102,241,.12)",color:row.ctr>=3.5?L:"#818cf8",border:"1px solid "+(row.ctr>=3.5?"rgba(225,48,108,.25)":"rgba(99,102,241,.25)")}}>{row.ctr+"%"}</span></td>
                       <td style={{padding:"10px",color:"#ec4899"}}>{fN(row.reach)}</td>
                       <td style={{padding:"10px",color:"#14b8a6"}}>{fN(row.profileVisits)}</td>
                       <td style={{padding:"10px",color:L,fontWeight:700}}>{"+"+(row.followers||0)}</td>
@@ -702,7 +912,7 @@ function App(){
       )}
 
       {toast&&(
-        <div className="toast" style={{background:toast.type==="err"?"rgba(239,68,68,.92)":"rgba(26,26,26,.96)",border:"1px solid "+(toast.type==="err"?"rgba(239,68,68,.5)":"rgba(198,241,53,.3)"),color:toast.type==="err"?"#fca5a5":L}}>
+        <div className="toast" style={{background:toast.type==="err"?"rgba(239,68,68,.92)":"rgba(26,26,26,.96)",border:"1px solid "+(toast.type==="err"?"rgba(239,68,68,.5)":"rgba(225,48,108,.3)"),color:toast.type==="err"?"#fca5a5":L}}>
           {toast.msg}
         </div>
       )}
