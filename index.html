@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -282,9 +283,9 @@ function App(){
   const [sortBy,setSortBy]=useState("investedBRL");
   const [sortDir,setSortDir]=useState("desc");
   const [search,setSearch]=useState("");
-  const [dateFrom,setDateFrom]=useState(isoToday());
-  const [dateTo,setDateTo]=useState(isoToday());
-  const [quick,setQuick]=useState("today");
+  const [dateFrom,setDateFrom]=useState("");
+  const [dateTo,setDateTo]=useState("");
+  const [quick,setQuick]=useState("all");
   const [sideActive,setSideActive]=useState("overview");
   const [sideOpen,setSideOpen]=useState(true);
   const [isMobile,setIsMobile]=useState(false);
@@ -321,14 +322,23 @@ function App(){
   const fetchMetaData=useCallback((token,accId,silent=false)=>{
     if(!token||!accId)return;
     setFetchingMeta(true);
-    const since=dateFrom||isoToday();
-    const until=dateTo||isoToday();
     const fields="campaign_name,ad_name,spend,clicks,ctr,reach,actions,date_start";
-    const timeRange=JSON.stringify({since:since,until:until});
+
+    // Se filtro for "Máximo" (sem datas), usa date_preset=maximum da Meta
+    // Senão usa time_range com as datas selecionadas
+    let extraParams="";
+    if(!dateFrom&&!dateTo){
+      extraParams="&date_preset=maximum";
+    } else {
+      const since=dateFrom||isoToday();
+      const until=dateTo||isoToday();
+      extraParams="&time_range="+encodeURIComponent(JSON.stringify({since:since,until:until}));
+    }
+
     const url="https://graph.facebook.com/v19.0/"+accId+"/insights"
       +"?fields="+encodeURIComponent(fields)
-      +"&time_range="+encodeURIComponent(timeRange)
-      +"&level=ad&limit=100"
+      +extraParams
+      +"&level=ad&limit=200"
       +"&access_token="+token;
     fetch(url)
       .then(r=>r.json())
@@ -374,6 +384,8 @@ function App(){
   const saveConfig=(token,accId)=>{
     localStorage.setItem("influ_token",token);localStorage.setItem("influ_acc",accId);
     setMetaToken(token);setMetaAccId(accId);setShowConfig(false);
+    // Força Máximo ao conectar via API para garantir que dados apareçam
+    setQuick("all");setDateFrom("");setDateTo("");
     startAuto(token,accId);
   };
 
