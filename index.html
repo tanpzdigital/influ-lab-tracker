@@ -46,11 +46,13 @@
         return allRows;
       } catch(e) { console.error("Firebase load error:",e); return null; }
     },
-    onUpdate(callback) {
-      return onSnapshot(doc(db,"tracker","meta"), async () => {
-        const rows = await window._fb.load();
-        if (rows) callback(rows);
-      });
+    async savePin(pin) {
+      try { await setDoc(doc(db,"tracker","auth"),{pin,updatedAt:new Date().toISOString()}); return true; }
+      catch(e) { return false; }
+    },
+    async loadPin() {
+      try { const d=await getDoc(doc(db,"tracker","auth")); return d.exists()?d.data().pin:null; }
+      catch(e) { return null; }
     }
   };
   window._fbReady = true;
@@ -141,8 +143,6 @@ const applyRate=(rows,r)=>rows.map(x=>({...x,investedBRL:parseFloat((x.investedU
 const L="#E1306C";
 const IG_GRAD="linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)";
 const IG_SOLID="#E1306C";
-const INTERVAL=1*60;
-const fmtCD=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 
 function Donut({value,max,color=L,size=110,stroke=11,label,sub}){
   const [v,setV]=useState(0);
@@ -252,10 +252,6 @@ function Funnel({items}){
           <div style={{fontSize:9,fontWeight:700,color:s.c,width:32,textAlign:"right",flexShrink:0}}>{i===0?"100%":s.pct.toFixed(1)+"%"}</div>
         </div>
       ))}
-      <div style={{marginTop:4,padding:"5px 8px",borderRadius:6,background:"rgba(225,48,108,.06)",border:"1px solid rgba(225,48,108,.15)",display:"flex",justifyContent:"space-between"}}>
-        <span style={{fontSize:9,color:"rgba(255,255,255,.3)"}}>Conversão alcance→seguidor</span>
-        <span style={{fontSize:10,fontWeight:700,color:L}}>{reach?(fo/reach*100).toFixed(2)+"%":"—"}</span>
-      </div>
     </div>
   );
 }
@@ -394,56 +390,85 @@ function MetaFunnelChart({items}){
   useEffect(()=>{const t=setTimeout(()=>setGo(true),280);return()=>clearTimeout(t);},[items]);
   const reach=items.reduce((s,r)=>s+(r.reach||0),0);
   const vis=items.reduce((s,r)=>s+(r.profileVisits||0),0);
-  const cl=items.reduce((s,r)=>s+(r.clicks||0),0);
   const fo=items.reduce((s,r)=>s+(r.followers||0),0);
-  const cv=items.reduce((s,r)=>s+(r.conversations||0),0);
   if(!reach)return<EmptyChart/>;
   const stages=[
-    {l:"Alcance",v:reach,pct:100,c:"#6366f1"},
-    {l:"Visitas",v:vis,pct:vis/reach*100,c:"#8b5cf6"},
-    {l:"Cliques",v:cl,pct:cl/reach*100,c:"#be185d"},
-    {l:"Seguidores",v:fo,pct:fo/reach*100,c:L},
-    {l:"Conversas",v:cv,pct:cv/reach*100,c:"#f472b6"},
+    {l:"Alcance",v:reach,pct:100},
+    {l:"Visitas",v:vis,pct:reach?vis/reach*100:0},
+    {l:"Seguidores",v:fo,pct:reach?fo/reach*100:0},
   ];
-  const W=600,H=170,CY=H/2,MAXHH=H*0.46,segW=W/stages.length;
-  const hh=i=>go?Math.max(stages[i].pct/100*MAXHH,stages[i].v>0?5:1.5):1.5;
+  const n=stages.length;
+  // layout: each stage occupies an equal column
+  const W=600,H=230,TOP=30,BOT=38;
+  const colW=W/n;
+  const CY=TOP+H/2;
+  const MAXHH=H*0.47;
+  // column centers (labels, %, values)
+  const cx=i=>colW/2+i*colW;
+  // half-height at each stage
+  const hh=i=>go?Math.max(stages[i].pct/100*MAXHH,stages[i].v>0?6:1.5):1.5;
+  // stage x positions = column centers (transition points between cols)
+  // shape: flat in first col, S-curve wave between cols, flat in last col
+  const buildPath=()=>{
+    const pts=stages.map((_,i)=>cx(i));
+    // top edge: start at left edge at hh(0), flat to col0 center,
+    // then S-curves through centers, flat from col(n-1) center to right edge
+    let top=`M0,${CY-hh(0)} L${pts[0]},${CY-hh(0)}`;
+    for(let i=0;i<pts.length-1;i++){
+      const mx=(pts[i]+pts[i+1])/2;
+      top+=` C${mx},${CY-hh(i)} ${mx},${CY-hh(i+1)} ${pts[i+1]},${CY-hh(i+1)}`;
+    }
+    top+=` L${W},${CY-hh(n-1)}`;
+    // bottom edge (right to left)
+    let bot=` L${W},${CY+hh(n-1)} L${pts[n-1]},${CY+hh(n-1)}`;
+    for(let i=pts.length-1;i>0;i--){
+      const mx=(pts[i-1]+pts[i])/2;
+      bot+=` C${mx},${CY+hh(i)} ${mx},${CY+hh(i-1)} ${pts[i-1]},${CY+hh(i-1)}`;
+    }
+    bot+=` L0,${CY+hh(0)} Z`;
+    return top+bot;
+  };
+  const VBH=TOP+H+BOT;
   return(
-    <div style={{overflowX:"auto"}}>
-      <svg width="100%" height={H+62} viewBox={`0 0 ${W} ${H+62}`} style={{display:"block",overflow:"visible",minWidth:300}}>
+    <div style={{width:"100%"}}>
+      <svg width="100%" height={VBH} viewBox={`0 0 ${W} ${VBH}`} style={{display:"block"}}>
         <defs>
-          {stages.slice(0,-1).map((s,i)=>(
-            <linearGradient key={i} id={`mfg${i}`} x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor={s.c} stopOpacity={0.88}/>
-              <stop offset="100%" stopColor={stages[i+1].c} stopOpacity={0.88}/>
-            </linearGradient>
-          ))}
+          <linearGradient id="funnelG" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#4f6ef7"/>
+            <stop offset="48%" stopColor="#7c3aed"/>
+            <stop offset="100%" stopColor="#be185d"/>
+          </linearGradient>
         </defs>
-        {stages.slice(0,-1).map((_,i)=>{
-          const x1=i*segW,x2=(i+1)*segW,cx=(x1+x2)/2;
-          const t1=CY-hh(i),b1=CY+hh(i),t2=CY-hh(i+1),b2=CY+hh(i+1);
-          const d=`M${x1},${t1} C${cx},${t1} ${cx},${t2} ${x2},${t2} L${x2},${b2} C${cx},${b2} ${cx},${b1} ${x1},${b1} Z`;
-          return<path key={i} d={d} fill={`url(#mfg${i})`}
-            style={{opacity:go?1:0,transition:`opacity .55s ease ${i*.09}s`}}/>;
-        })}
+        {/* Column labels — top */}
         {stages.map((s,i)=>(
-          <rect key={i} x={i*segW-2} y={0} width={6} height={H} rx={3} fill={s.c}
-            style={{transformBox:"fill-box",transformOrigin:"center",
-              transform:go?`scaleY(${Math.max(stages[i].pct/100,.03)})`:"scaleY(0.01)",
-              transition:`transform 1s cubic-bezier(.34,1.1,.64,1) ${i*.09}s`}}/>
+          <text key={i} x={cx(i)} y={16} textAnchor="middle"
+            fill="rgba(255,255,255,.5)" fontSize={10} fontWeight={700} letterSpacing={0.5}>
+            {s.l.toUpperCase()}
+          </text>
         ))}
+        {/* Vertical dividers */}
+        {[1,2].slice(0,n-1).map(i=>(
+          <line key={i} x1={i*colW} y1={TOP-2} x2={i*colW} y2={TOP+H+2}
+            stroke="rgba(255,255,255,.12)" strokeWidth={1}/>
+        ))}
+        {/* Funnel shape */}
+        <path d={buildPath()} fill="url(#funnelG)"
+          style={{opacity:go?1:0,transition:"opacity .7s ease"}}/>
+        {/* % labels inside */}
         {stages.map((s,i)=>(
-          <text key={i} x={i*segW+segW/2} y={CY+5} textAnchor="middle"
-            fill="#fff" fontSize={11} fontWeight={700}
-            style={{opacity:go?1:0,transition:`opacity .5s ease ${.35+i*.09}s`}}>
+          <text key={i} x={cx(i)} y={CY+5} textAnchor="middle"
+            fill="#fff" fontSize={15} fontWeight={700}
+            style={{opacity:go?1:0,transition:`opacity .5s ease ${.25+i*.15}s`,pointerEvents:"none"}}>
             {i===0?"100%":s.pct<0.1?"<0.1%":s.pct.toFixed(1)+"%"}
           </text>
         ))}
+        {/* Values bottom */}
         {stages.map((s,i)=>(
-          <g key={i}>
-            <text x={i*segW+segW/2} y={H+18} textAnchor="middle" fill="rgba(255,255,255,.5)" fontSize={9} fontWeight={600}>{s.l}</text>
-            <text x={i*segW+segW/2} y={H+34} textAnchor="middle" fill={s.c} fontSize={13} fontWeight={700}>{fN(s.v)}</text>
-            {i>0&&<text x={i*segW+segW/2} y={H+50} textAnchor="middle" fill="rgba(255,255,255,.25)" fontSize={8}>{s.pct.toFixed(2)}% do alcance</text>}
-          </g>
+          <text key={i} x={cx(i)} y={TOP+H+BOT-8} textAnchor="middle"
+            fill="rgba(255,255,255,.45)" fontSize={12} fontWeight={600}
+            style={{opacity:go?1:0,transition:`opacity .5s ease ${.4+i*.12}s`}}>
+            {fN(s.v)}
+          </text>
         ))}
       </svg>
     </div>
@@ -476,7 +501,7 @@ function WorldMapChart({items}){
   const BX=284,BY=231;
   return(
     <div style={{position:"relative",overflow:"hidden",borderRadius:12,background:"#080810"}}>
-      <svg width="100%" viewBox="0 0 800 390" style={{display:"block"}}>
+      <svg width="100%" viewBox="160 100 480 240" style={{display:"block"}}>
         {Array.from({length:6},(_,i)=>(
           <line key={`h${i}`} x1={0} y1={i*78} x2={800} y2={i*78} stroke="rgba(255,255,255,.025)" strokeWidth={1}/>
         ))}
@@ -516,57 +541,11 @@ function WorldMapChart({items}){
   );
 }
 
-function MetaModal({onClose,onSave,savedToken,savedAccId}){
-  const [tok,setTok]=useState(savedToken||"");
-  const [acc,setAcc]=useState(savedAccId||"");
-  const [vis,setVis]=useState(false);
-  useEffect(()=>{const t=setTimeout(()=>setVis(true),10);return()=>clearTimeout(t);},[]);
-  const inp={width:"100%",padding:"10px 13px",borderRadius:10,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:12,outline:"none",fontFamily:"monospace",transition:"border-color .2s ease,box-shadow .2s ease"};
-  return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20,backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)",opacity:vis?1:0,transition:"opacity .25s ease"}} onClick={onClose}>
-      <div style={{background:"#0a0a0e",borderRadius:22,padding:28,width:"100%",maxWidth:480,border:"1px solid rgba(255,255,255,.1)",boxShadow:"0 24px 80px rgba(0,0,0,.7)",transform:vis?"translateY(0) scale(1)":"translateY(20px) scale(.97)",transition:"transform .3s cubic-bezier(.34,1.1,.64,1)"}} onClick={e=>e.stopPropagation()}>
-        <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:18,fontWeight:700,marginBottom:4}}>Conectar Meta API</div>
-        <div style={{fontSize:12,color:"rgba(255,255,255,.4)",marginBottom:18,lineHeight:1.6}}>Seus impulsionamentos do Instagram serão buscados automaticamente a cada 5 minutos.</div>
-        <div style={{background:"rgba(225,48,108,.05)",border:"1px solid rgba(225,48,108,.15)",borderRadius:12,padding:"14px 16px",marginBottom:18}}>
-          <div style={{fontSize:11,fontWeight:700,color:L,marginBottom:8}}>Como gerar o Access Token:</div>
-          {["Acesse: developers.facebook.com/tools/explorer","Selecione o app INFLU LAB TRACKER","Adicione permissões: ads_read + read_insights","Clique em Gerar token de acesso","Copie e cole abaixo"].map((s,i)=>(
-            <div key={i} style={{display:"flex",gap:8,marginBottom:4,alignItems:"flex-start"}}>
-              <span style={{width:16,height:16,borderRadius:"50%",background:"rgba(225,48,108,.15)",color:L,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{i+1}</span>
-              <span style={{fontSize:11,color:"rgba(255,255,255,.6)",lineHeight:1.4}}>{s}</span>
-            </div>
-          ))}
-          <div style={{marginTop:8,fontSize:10,color:"rgba(255,255,255,.3)"}}>Ad Account ID: business.facebook.com → Configurações → Contas de Anúncios → ID (formato: act_XXXXXXXXXX)</div>
-        </div>
-        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:18}}>
-          <div>
-            <div style={{fontSize:11,color:"rgba(255,255,255,.4)",marginBottom:5,fontWeight:600,letterSpacing:".4px"}}>ACCESS TOKEN</div>
-            <input value={tok} onChange={e=>setTok(e.target.value)} placeholder="EAAxxxxxxxxxxxxx..." style={inp}
-              onFocus={e=>{e.target.style.borderColor="rgba(225,48,108,.5)";e.target.style.boxShadow="0 0 0 3px rgba(225,48,108,.1)";}}
-              onBlur={e=>{e.target.style.borderColor="rgba(255,255,255,.1)";e.target.style.boxShadow="none";}}/>
-          </div>
-          <div>
-            <div style={{fontSize:11,color:"rgba(255,255,255,.4)",marginBottom:5,fontWeight:600,letterSpacing:".4px"}}>AD ACCOUNT ID</div>
-            <input value={acc} onChange={e=>setAcc(e.target.value)} placeholder="act_XXXXXXXXXX" style={inp}
-              onFocus={e=>{e.target.style.borderColor="rgba(225,48,108,.5)";e.target.style.boxShadow="0 0 0 3px rgba(225,48,108,.1)";}}
-              onBlur={e=>{e.target.style.borderColor="rgba(255,255,255,.1)";e.target.style.boxShadow="none";}}/>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:10}}>
-          <button onClick={onClose} className="rb" style={{flex:1,padding:11,borderRadius:11,fontSize:13,fontWeight:600,justifyContent:"center"}}>Cancelar</button>
-          <button onClick={()=>onSave(tok.trim(),acc.trim())} className="btn-pink"
-            style={{flex:2,padding:11,borderRadius:11,background:L,border:"none",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700,letterSpacing:".2px"}}>
-            Salvar e Conectar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function LoginScreen({onAuth}){
   const PIN_KEY="influ_pin_hash";
-  const stored=localStorage.getItem(PIN_KEY);
-  const [mode,setMode]=useState(stored?"login":"register");
+  const [storedPin,setStoredPin]=useState(localStorage.getItem(PIN_KEY));
+  const [mode,setMode]=useState(localStorage.getItem(PIN_KEY)?"login":"register");
   const [pin,setPin]=useState("");
   const [confirm,setConfirm]=useState("");
   const [step,setStep]=useState("pin");
@@ -575,7 +554,15 @@ function LoginScreen({onAuth}){
   const [visible,setVisible]=useState(false);
   const [pressedKey,setPressedKey]=useState(null);
 
-  useEffect(()=>{setTimeout(()=>setVisible(true),80);},[]);
+  // Sync PIN from Firebase on load (in case localStorage was cleared)
+  useEffect(()=>{
+    setTimeout(()=>setVisible(true),80);
+    if(!localStorage.getItem(PIN_KEY)&&window._fb){
+      window._fb.loadPin().then(p=>{
+        if(p){localStorage.setItem(PIN_KEY,p);setStoredPin(p);setMode("login");}
+      });
+    }
+  },[]);
 
   function playClick(){
     try{
@@ -598,10 +585,10 @@ function LoginScreen({onAuth}){
     playClick();
     if(mode==="login"){
       const next=pin+d;setPin(next);
-      if(next.length===4){setTimeout(()=>{if(next===localStorage.getItem(PIN_KEY)){onAuth();}else doShake("PIN incorreto. Tente novamente.");},120);}
+      if(next.length===4){setTimeout(()=>{const saved=localStorage.getItem(PIN_KEY);if(next===saved){onAuth();}else doShake("PIN incorreto. Tente novamente.");},120);}
     } else {
       if(step==="pin"){const next=pin+d;setPin(next);if(next.length===4){setTimeout(()=>setStep("confirm"),120);}}
-      else{const next=confirm+d;setConfirm(next);if(next.length===4){setTimeout(()=>{if(next===pin){localStorage.setItem(PIN_KEY,pin);onAuth();}else doShake("Os PINs não coincidem. Tente novamente.");},120);}}
+      else{const next=confirm+d;setConfirm(next);if(next.length===4){setTimeout(()=>{if(next===pin){localStorage.setItem(PIN_KEY,pin);if(window._fb)window._fb.savePin(pin);onAuth();}else doShake("Os PINs não coincidem. Tente novamente.");},120);}}
     }
   }
   function del(){playClick();if(mode==="login")setPin(p=>p.slice(0,-1));else if(step==="pin")setPin(p=>p.slice(0,-1));else setConfirm(p=>p.slice(0,-1));}
@@ -710,7 +697,7 @@ function LoginScreen({onAuth}){
                 onMouseLeave={e=>e.currentTarget.style.opacity="1"}>Criar PIN</span>
             </span>
           )}
-          {mode==="register"&&stored&&(
+          {mode==="register"&&storedPin&&(
             <span style={{fontSize:13,color:"rgba(255,255,255,.4)"}}>
               Já tem PIN?{" "}
               <span onClick={switchMode} style={{color:L,fontWeight:600,cursor:"pointer",transition:"opacity .15s"}}
@@ -748,23 +735,14 @@ function Dashboard(){
   const [sortBy,setSortBy]=useState("investedBRL");
   const [sortDir,setSortDir]=useState("desc");
   const [search,setSearch]=useState("");
-  const [dateFrom,setDateFrom]=useState("");
-  const [dateTo,setDateTo]=useState("");
-  const [quick,setQuick]=useState("all");
+  const [dateFrom,setDateFrom]=useState(isoToday());
+  const [dateTo,setDateTo]=useState(isoToday());
+  const [quick,setQuick]=useState("today");
   const [sideActive,setSideActive]=useState("overview");
   const [sideOpen,setSideOpen]=useState(true);
   const [isMobile,setIsMobile]=useState(false);
-  const [metaToken,setMetaToken]=useState(()=>localStorage.getItem("influ_token")||"");
-  const [metaAccId,setMetaAccId]=useState(()=>localStorage.getItem("influ_acc")||"");
-  const [showConfig,setShowConfig]=useState(false);
-  const [autoActive,setAutoActive]=useState(false);
-  const [fetchingMeta,setFetchingMeta]=useState(false);
-  const [lastUpdate,setLastUpdate]=useState(null);
-  const [countdown,setCountdown]=useState(INTERVAL);
   const [ddOpen,setDdOpen]=useState(false);
-  const autoRef=useRef(null);const countRef=useRef(null);
   const [fbStatus,setFbStatus]=useState("conectando...");
-  const fbUnsubRef=useRef(null);
 
   // Nav helper with transition
   function navTo(id){
@@ -783,12 +761,8 @@ function Dashboard(){
         if(rows&&rows.length>0){setRawData(rows);setUsingDemo(false);setFbStatus("sincronizado");saveHistory(rows);}
         else{const local=loadHistory();if(local&&local.length>0){setRawData(local);setUsingDemo(false);}setFbStatus("vazio");}
       }catch(e){setFbStatus("offline");}
-      fbUnsubRef.current=window._fb.onUpdate(rows=>{
-        if(rows&&rows.length>0){setRawData(rows);setUsingDemo(false);saveHistory(rows);setFbStatus("sincronizado");}
-      });
     };
     init();
-    return()=>{if(fbUnsubRef.current)fbUnsubRef.current();};
   },[]);
 
   useEffect(()=>{
@@ -807,64 +781,7 @@ function Dashboard(){
         .then(r=>r.json()).then(d=>{const v=d&&d.rates&&d.rates.BRL;if(v>1){done(v,"ao vivo");return;}throw 0;})
         .catch(fail));
   },[]);
-  useEffect(()=>{fetchRate(true);},[]);
 
-  const fetchMetaData=useCallback((token,accId,silent=false)=>{
-    if(!token||!accId)return;
-    setFetchingMeta(true);
-    const fields="campaign_name,ad_name,spend,clicks,ctr,reach,actions,date_start";
-    let extraParams="";
-    const since=dateFrom||isoToday();const until=dateTo||isoToday();
-    extraParams="&time_range="+encodeURIComponent(JSON.stringify({since,until}));
-    const url="https://graph.facebook.com/v19.0/"+accId+"/insights"+"?fields="+encodeURIComponent(fields)+extraParams+"&level=ad&limit=200"+"&access_token="+token;
-    fetch(url).then(r=>r.json()).then(d=>{
-      if(d.error)throw new Error(d.error.message||JSON.stringify(d.error));
-      const data=d.data||[];
-      if(!data.length)throw new Error("Sem campanhas no período. Selecione Máximo no filtro.");
-      const getA=(actions,type)=>parseInt((actions&&actions.find(a=>a.action_type===type)&&actions.find(a=>a.action_type===type).value)||"0")||0;
-      const rows=data.map((item,i)=>{
-        const usd=parseFloat(item.spend||"0")||0;
-        const actions=item.actions||[];
-        const name=(item.ad_name||item.campaign_name||"Campanha "+(i+1)).replace(/^Post do Instagram:\s*/i,"").trim();
-        return{id:i,post:name,rawPost:item.ad_name||name,date:item.date_start||isoToday(),
-          investedUSD:usd,investedBRL:parseFloat((usd*rate).toFixed(2)),
-          clicks:parseInt(item.clicks||"0")||0,ctr:parseFloat(parseFloat(item.ctr||"0").toFixed(2)),
-          reach:parseInt(item.reach||"0")||0,
-          followers:getA(actions,"like")+getA(actions,"follow"),
-          profileVisits:getA(actions,"view_content")||0,
-          conversations:getA(actions,"onsite_conversion.messaging_conversation_started_7d"),
-        };
-      });
-      // Merge com histórico existente (CSV + dias anteriores), sem apagar nada
-      let hist=[];
-      try{const s=localStorage.getItem("influ_history");if(s)hist=JSON.parse(s);}catch(e){}
-      const map=new Map();
-      hist.forEach(r=>{map.set((r.post||"")+"__"+(r.date||""),r);});
-      rows.forEach(r=>{const k=(r.post||"")+"__"+(r.date||"");map.set(k,{...r,id:map.size});});
-      const merged=Array.from(map.values()).sort((a,b)=>((b.date||"")>(a.date||""))?1:-1).map((r,i)=>({...r,id:i}));
-      try{localStorage.setItem("influ_history",JSON.stringify(merged));}catch(e){}
-      setRawData(merged);setUsingDemo(false);setNameCol("Meta API");setLastUpdate(new Date());setCountdown(INTERVAL);
-      if(window._fb){window._fb.save(merged).then(ok=>setFbStatus(ok?"sincronizado":"offline"));}
-      if(!silent)toast$("✓ "+rows.length+" de hoje · "+merged.length+" total");
-    }).catch(e=>{if(!silent)toast$("Erro: "+e.message,"err");}).finally(()=>setFetchingMeta(false));
-  },[rate,dateFrom,dateTo]);
-
-  const stopAuto=useCallback(()=>{clearInterval(autoRef.current);clearInterval(countRef.current);setAutoActive(false);},[]);
-  const startAuto=useCallback((token,accId)=>{
-    if(!token||!accId){toast$("Configure o Token e Ad Account ID","err");return;}
-    stopAuto();fetchMetaData(token,accId,false);
-    autoRef.current=setInterval(()=>fetchMetaData(token,accId,true),INTERVAL*1000);
-    setCountdown(INTERVAL);countRef.current=setInterval(()=>setCountdown(c=>c<=1?INTERVAL:c-1),1000);
-    setAutoActive(true);
-  },[fetchMetaData,stopAuto]);
-  useEffect(()=>()=>{clearInterval(autoRef.current);clearInterval(countRef.current);},[]);
-
-  const saveConfig=(token,accId)=>{
-    localStorage.setItem("influ_token",token);localStorage.setItem("influ_acc",accId);
-    setMetaToken(token);setMetaAccId(accId);setShowConfig(false);
-    startAuto(token,accId);
-  };
-  useEffect(()=>{if(metaToken&&metaAccId){setTimeout(()=>startAuto(metaToken,metaAccId),1500);}},[]);
 
   const loadHistory=()=>{try{const s=localStorage.getItem("influ_history");return s?JSON.parse(s):[];}catch(e){return[];}};
   const saveHistory=(rows)=>{try{localStorage.setItem("influ_history",JSON.stringify(rows));}catch(e){}};
@@ -925,9 +842,13 @@ function Dashboard(){
   },[df,search,sortBy,sortDir]);
   const tSort=k=>{if(sortBy===k)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortBy(k);setSortDir("desc");}};
   const topPost=useMemo(()=>df.length?[...df].sort((a,b)=>b.followers-a.followers)[0]:null,[df]);
+  const groupedRows=useMemo(()=>{
+    const g={};
+    tableRows.forEach(r=>{const d=r.date||"sem data";if(!g[d])g[d]=[];g[d].push(r);});
+    return Object.entries(g).sort(([a],[b])=>b>a?1:-1);
+  },[tableRows]);
 
   const navItems=[{id:"overview",icon:"⊞",label:"Overview"},{id:"charts",icon:"◎",label:"Gráficos"},{id:"table",icon:"≡",label:"Campanhas"}];
-  const metaOk=!!(metaToken&&metaAccId);
   const OPTS=[{k:"all",l:"Máximo"},{k:"today",l:"Hoje"},{k:"yesterday",l:"Ontem"},{k:"7",l:"Últimos 7 dias"},{k:"month",l:"Esse mês"},{k:"lmonth",l:"Mês passado"},{k:"custom",l:"Personalizado"}];
   const ddLabel=(OPTS.find(o=>o.k===quick)||{l:"Hoje"}).l;
   const card={background:"rgba(6,6,9,.85)",borderRadius:18,border:"1px solid rgba(255,255,255,.09)",boxShadow:"inset 0 1px 0 rgba(255,255,255,.07),0 8px 32px rgba(0,0,0,.6)",backdropFilter:"blur(20px) saturate(160%)",WebkitBackdropFilter:"blur(20px) saturate(160%)"};
@@ -1035,7 +956,6 @@ function Dashboard(){
         @media(max-width:768px){.main-scroll{padding:12px 12px 84px!important}.period-sel{max-width:100%!important}}
       `}</style>
 
-      {showConfig&&<MetaModal onClose={()=>setShowConfig(false)} onSave={saveConfig} savedToken={metaToken} savedAccId={metaAccId}/>}
       {isMobile&&sideOpen&&<div className="sb-ov" onClick={()=>setSideOpen(false)}/>}
 
       {/* ── Sidebar ── */}
@@ -1049,14 +969,10 @@ function Dashboard(){
         ))}
         <div style={{flex:1}}/>
         <div style={{marginBottom:8,textAlign:"center",padding:"0 4px"}}>
-          <div className={autoActive?"live-dot":""} style={{width:8,height:8,borderRadius:"50%",background:metaOk&&autoActive?L:"rgba(255,255,255,.2)",margin:"0 auto 4px"}}/>
-          <div style={{fontSize:8,color:"rgba(255,255,255,.25)"}}>{metaOk?(autoActive?"ao vivo":"conectado"):"offline"}</div>
+          <div style={{width:8,height:8,borderRadius:"50%",background:fbStatus==="sincronizado"?"#4ade80":"rgba(255,255,255,.2)",margin:"0 auto 4px"}}/>
+          <div style={{fontSize:8,color:"rgba(255,255,255,.25)"}}>{fbStatus==="sincronizado"?"sync":"offline"}</div>
         </div>
         <button className="nb" onClick={()=>setSideOpen(false)} title="Fechar">←</button>
-        <div style={{fontSize:9,color:"rgba(255,255,255,.25)",textAlign:"center",padding:"0 4px",lineHeight:1.4,marginBottom:8}}>
-          <div style={{color:L,fontWeight:700,fontSize:11}}>{"R$"+rate.toFixed(2)}</div>
-          <div style={{fontSize:8}}>{"USD · "+rateLabel}</div>
-        </div>
       </div>
 
       {/* ── Main content ── */}
@@ -1084,7 +1000,7 @@ function Dashboard(){
                 </svg>
               </div>
               {!isMobile&&<div style={{fontSize:11,color:"rgba(255,255,255,.3)",marginTop:1}}>
-                {usingDemo?"Demo":nameCol||"API"}{lastUpdate&&<span style={{color:"rgba(225,48,108,.5)"}}>{" · "+lastUpdate.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</span>}{!lastUpdate&&<span>{" · "+isoToday()}</span>}
+                {usingDemo?"Demo":nameCol||"CSV"}
                 {!usingDemo&&<span style={{color:"rgba(255,255,255,.2)"}}>{" · "+rawData.length+" registros"}</span>}
                 <span style={{marginLeft:6,color:fbStatus==="sincronizado"?"#4ade80":fbStatus==="salvando..."?"#f59e0b":"rgba(255,255,255,.3)"}}>{"🔥 "+fbStatus}</span>
               </div>}
@@ -1166,7 +1082,7 @@ function Dashboard(){
               <div className="metric-card" style={{...card,padding:"20px 22px",display:"flex",flexDirection:"column",gap:6,position:"relative",overflow:"hidden"}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Total Investido</div>
                 <div style={{...kv,fontSize:isMobile?26:32,background:IG_GRAD,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>{fR(T.tB)}</div>
-                <div style={{fontSize:11,color:"rgba(255,255,255,.35)"}}>{fU(T.tU)+" · R$"+rate.toFixed(2)+"/USD"}</div>
+                <div style={{fontSize:11,color:"rgba(255,255,255,.35)"}}>{fU(T.tU)}</div>
                 <div style={{marginTop:6}}><Spark data={df.map(r=>r.investedBRL)} color={IG_SOLID} width={180} height={36}/></div>
                 <div style={{position:"absolute",right:-20,top:-20,width:100,height:100,borderRadius:"50%",background:"rgba(225,48,108,.04)",pointerEvents:"none"}}/>
               </div>
@@ -1186,11 +1102,11 @@ function Dashboard(){
             <div className="g3 stagger" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1.5fr",gap:14}}>
               <div className="metric-card" style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",alignSelf:"flex-start"}}>CTR Médio</div>
-                <Donut value={parseFloat(T.avgCTR)} max={10} color={IG_SOLID} size={110} stroke={11} label={T.avgCTR+"%"} sub="de 10% max"/>
+                <Donut value={parseFloat(T.avgCTR)} max={10} color={IG_SOLID} size={110} stroke={11} label={T.avgCTR+"%"} sub=""/>
               </div>
               <div className="metric-card" style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",alignSelf:"flex-start"}}>Conversas</div>
-                <Donut value={T.cv} max={Math.max(T.cv*1.5,1)} color="#f472b6" size={110} stroke={11} label={fN(T.cv)} sub={T.cv?fR(T.tB/T.cv)+"/conv":"—"}/>
+                <Donut value={T.cv} max={Math.max(T.cv*1.5,1)} color="#f472b6" size={110} stroke={11} label={fN(T.cv)} sub=""/>
               </div>
               {topPost&&(
                 <div className="metric-card" style={{...card,padding:"18px 20px"}}>
@@ -1223,26 +1139,48 @@ function Dashboard(){
                 <HBar items={df} dataKey="clicks" color="#6366f1" fmtVal={v=>fN(v)}/>
               </div>
             </div>
-            {/* Upload / Connect */}
-            <div className="stagger" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:14}}>
-              <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",gap:10}}>
-                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Importar CSV</div>
-                <label className={"dz"+(dragOver?" ov":"")}
-                  onDragOver={e=>{e.preventDefault();setDragOver(true);}}
-                  onDragLeave={()=>setDragOver(false)} onDrop={onDrop}>
-                  <input type="file" accept=".csv" onChange={e=>loadCSV(e.target.files[0])}/>
-                  <span style={{fontSize:18}}>📂</span>
-                  <span style={{fontSize:12,color:"rgba(255,255,255,.4)"}}>Arraste ou clique para importar CSV</span>
-                </label>
+            {/* Upload CSV */}
+            <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",gap:12}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Importar Dados via CSV</div>
+                {!usingDemo&&rawData.length>0&&(
+                  <div style={{fontSize:10,color:"rgba(255,255,255,.28)"}}>
+                    {rawData.length} registros · {[...new Set(rawData.map(r=>r.date).filter(Boolean))].length} dias
+                  </div>
+                )}
               </div>
-              <div style={{...card,padding:"18px 20px",display:"flex",flexDirection:"column",gap:10}}>
-                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Meta API</div>
-                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  <button className="rb" onClick={()=>setShowConfig(true)}>⚙️ {metaOk?"Reconfigurar":"Conectar Meta"}</button>
-                  {metaOk&&!autoActive&&<button className="rb" onClick={()=>startAuto(metaToken,metaAccId)}>▶ Iniciar Auto</button>}
-                  {autoActive&&<button className="rb" onClick={stopAuto} style={{color:"#f87171",borderColor:"rgba(248,113,113,.3)"}}>⏹ {fmtCD(countdown)}</button>}
-                </div>
-              </div>
+              <label className={"dz"+(dragOver?" ov":"")}
+                onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+                onDragLeave={()=>setDragOver(false)} onDrop={onDrop}
+                style={{padding:"9px 14px",gap:8}}>
+                <input type="file" accept=".csv" onChange={e=>loadCSV(e.target.files[0])}/>
+                <span style={{fontSize:18}}>📂</span>
+                <div style={{fontSize:12,color:"rgba(255,255,255,.45)"}}>Arraste ou clique para importar CSV</div>
+              </label>
+              {!usingDemo&&rawData.length>0&&(()=>{
+                const dates=[...new Set(rawData.map(r=>r.date).filter(Boolean))].sort().reverse();
+                return(
+                  <div>
+                    <div style={{fontSize:9,color:"rgba(255,255,255,.25)",fontWeight:700,letterSpacing:".5px",marginBottom:6}}>DIAS CARREGADOS</div>
+                    <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                      {dates.slice(0,15).map(d=>(
+                        <span key={d} style={{padding:"3px 9px",borderRadius:20,background:"rgba(225,48,108,.1)",border:"1px solid rgba(225,48,108,.2)",color:L,fontSize:10,fontWeight:600}}>{d.slice(5)}</span>
+                      ))}
+                      {dates.length>15&&<span style={{fontSize:10,color:"rgba(255,255,255,.25)"}}>+{dates.length-15} mais</span>}
+                    </div>
+                    <div style={{marginTop:10,display:"flex",gap:8}}>
+                      <button className="rb" style={{color:"#f87171",borderColor:"rgba(248,113,113,.2)"}} onClick={()=>{
+                        if(window.confirm("Limpar todos os dados do histórico?")){
+                          localStorage.removeItem("influ_history");
+                          setRawData(applyRate(DEMO,rate));setUsingDemo(true);setNameCol(null);
+                          if(window._fb)window._fb.save([]);
+                          toast$("Dados apagados");
+                        }
+                      }}>🗑 Limpar histórico</button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -1257,7 +1195,6 @@ function Dashboard(){
               </div>
               <div className="chart-card" style={{...card,padding:"18px 20px"}}>
                 <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:4}}>Custo por Seguidor · Eficiência</div>
-                <div style={{fontSize:9,color:"rgba(255,255,255,.2)",marginBottom:10}}>Seguidores por R$100 — maior = melhor</div>
                 <CostPerFollowerChart items={df}/>
               </div>
             </div>
@@ -1267,11 +1204,10 @@ function Dashboard(){
             </div>
             <div className="chart-card" style={{...card,padding:"20px 22px"}}>
               <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:2}}>Funil do Caminho do Lead</div>
-              <div style={{fontSize:10,color:"rgba(255,255,255,.2)",marginBottom:14}}>Alcance → Visitas → Cliques → Seguidores → Conversas</div>
               <MetaFunnelChart items={df}/>
             </div>
             <div className="chart-card" style={{...card,padding:"18px 20px"}}>
-              <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Distribuição Geográfica · Foco Brasil</div>
+              <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px",marginBottom:12}}>Distribuição Geográfica</div>
               <WorldMapChart items={df}/>
             </div>
           </div>
@@ -1279,97 +1215,103 @@ function Dashboard(){
 
         {/* ── TABLE TAB ── */}
         {tab==="table"&&(
-          <div key={"tb-"+tabKey} className="page-enter">
-            <div className="chart-card" style={{...card,padding:"18px 20px"}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:8,flexWrap:"wrap"}}>
-                <div style={{fontSize:10,color:"rgba(255,255,255,.35)",fontWeight:600,textTransform:"uppercase",letterSpacing:".5px"}}>Detalhes por Campanha</div>
-                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Buscar campanha..."
-                  style={{padding:"6px 12px",borderRadius:9,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:11,outline:"none",width:isMobile?"100%":200,transition:"border-color .2s ease,box-shadow .2s ease"}}
-                  onFocus={e=>{e.target.style.borderColor="rgba(225,48,108,.5)";e.target.style.boxShadow="0 0 0 3px rgba(225,48,108,.08)";}}
-                  onBlur={e=>{e.target.style.borderColor="rgba(255,255,255,.1)";e.target.style.boxShadow="none";}}/>
-              </div>
-
-              {/* ── Desktop: tabela normal ── */}
-              {!isMobile&&(
-                <div style={{overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                    <thead>
-                      <tr style={{borderBottom:"1px solid rgba(255,255,255,.07)"}}>
-                        {[{k:"post",l:"Campanha"},{k:"date",l:"Data"},{k:"investedBRL",l:"Investido"},{k:"clicks",l:"Cliques"},{k:"ctr",l:"CTR"},{k:"reach",l:"Alcance"},{k:"profileVisits",l:"Visitas"},{k:"followers",l:"Seguidores"},{k:"conversations",l:"Conversas"}].map(c=>(
-                          <th key={c.k} className={"th"+(sortBy===c.k?" on":"")} onClick={()=>tSort(c.k)}>{c.l}{sortBy===c.k?(sortDir==="desc"?" ↓":" ↑"):""}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tableRows.map((row,ri)=>(
-                        <tr key={row.id} className="tr" style={{borderBottom:"1px solid rgba(255,255,255,.04)",animation:`cardIn .3s ease ${ri*.03}s both`}}>
-                          <td style={{padding:"10px",fontWeight:500,color:"#e8e8e8",maxWidth:200,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={row.rawPost||row.post}>{row.post}</td>
-                          <td style={{padding:"10px",color:"rgba(255,255,255,.3)",whiteSpace:"nowrap"}}>{row.date}</td>
-                          <td style={{padding:"10px",whiteSpace:"nowrap"}}>
-                            <div style={{color:L,fontWeight:700}}>{fR(row.investedBRL)}</div>
-                            <div style={{color:"rgba(255,255,255,.22)",fontSize:9,marginTop:1}}>{fU(row.investedUSD)}</div>
-                          </td>
-                          <td style={{padding:"10px",color:"#6366f1",fontWeight:600}}>{fN(row.clicks)}</td>
-                          <td style={{padding:"10px"}}><span style={{padding:"2px 7px",borderRadius:20,fontSize:10,fontWeight:600,background:row.ctr>=3.5?"rgba(225,48,108,.12)":"rgba(99,102,241,.12)",color:row.ctr>=3.5?L:"#818cf8",border:"1px solid "+(row.ctr>=3.5?"rgba(225,48,108,.25)":"rgba(99,102,241,.25)")}}>{row.ctr+"%"}</span></td>
-                          <td style={{padding:"10px",color:"#ec4899"}}>{fN(row.reach)}</td>
-                          <td style={{padding:"10px",color:"#14b8a6"}}>{fN(row.profileVisits)}</td>
-                          <td style={{padding:"10px",color:L,fontWeight:700}}>{"+"+(row.followers||0)}</td>
-                          <td style={{padding:"10px",color:"#f472b6"}}>{row.conversations||0}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {tableRows.length===0&&<div style={{textAlign:"center",padding:40,color:"rgba(255,255,255,.18)",fontSize:12}}>Nenhuma campanha no período</div>}
-                </div>
-              )}
-
-              {/* ── Mobile: tabela compacta ── */}
-              {isMobile&&(
-                <div>
-                  {/* Sort pills */}
-                  <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap"}}>
-                    {[{k:"followers",l:"+Seg"},{k:"clicks",l:"Cliq"},{k:"reach",l:"Imp"},{k:"date",l:"Data"}].map(c=>(
-                      <button key={c.k} onClick={()=>tSort(c.k)} style={{
-                        padding:"3px 8px",borderRadius:20,fontSize:10,fontWeight:600,border:"none",cursor:"pointer",
-                        background:sortBy===c.k?"rgba(225,48,108,.2)":"rgba(255,255,255,.06)",
-                        color:sortBy===c.k?L:"rgba(255,255,255,.35)",
-                        transition:"all .15s ease"
-                      }}>
-                        {c.l}{sortBy===c.k?(sortDir==="desc"?" ↓":" ↑"):""}
-                      </button>
-                    ))}
-                  </div>
-                  {/* Header row */}
-                  <div style={{display:"flex",alignItems:"center",paddingBottom:7,borderBottom:"1px solid rgba(255,255,255,.1)",marginBottom:2}}>
-                    <div style={{flex:2,fontSize:8,color:"rgba(255,255,255,.28)",fontWeight:700,letterSpacing:".5px"}}>CAMPANHA</div>
-                    <div style={{width:38,fontSize:8,color:"rgba(255,255,255,.28)",fontWeight:700,flexShrink:0,textAlign:"right"}}>DATA</div>
-                    {["SEG","R$/SEG","CLIQ","IMP"].map(h=>(
-                      <div key={h} style={{flex:1,fontSize:8,color:"rgba(255,255,255,.28)",fontWeight:700,textAlign:"right",letterSpacing:".3px"}}>{h}</div>
-                    ))}
-                  </div>
-                  {/* Data rows */}
-                  {tableRows.map((row,ri)=>{
-                    const cpf=row.followers>0?fN(Math.round(row.investedBRL/row.followers)):"—";
-                    return(
-                    <div key={row.id} style={{
-                      display:"flex",alignItems:"center",
-                      padding:"9px 0",
-                      borderBottom:"1px solid rgba(255,255,255,.04)",
-                      animation:`cardIn .3s ease ${ri*.03}s both`
-                    }}>
-                      <div style={{flex:2,fontSize:10,fontWeight:600,color:"#fff",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",paddingRight:6}}>{row.post}</div>
-                      <div style={{width:38,fontSize:9,color:"rgba(255,255,255,.28)",flexShrink:0,textAlign:"right",whiteSpace:"nowrap"}}>{(row.date||"").slice(5)}</div>
-                      <div style={{flex:1,fontSize:10,fontWeight:700,color:L,textAlign:"right",whiteSpace:"nowrap"}}>{"+"+(row.followers||0)}</div>
-                      <div style={{flex:1,fontSize:10,fontWeight:700,color:"rgba(255,255,255,.65)",textAlign:"right",whiteSpace:"nowrap"}}>{cpf}</div>
-                      <div style={{flex:1,fontSize:10,fontWeight:700,color:"rgba(255,255,255,.65)",textAlign:"right",whiteSpace:"nowrap"}}>{fN(row.clicks)}</div>
-                      <div style={{flex:1,fontSize:10,fontWeight:700,color:"rgba(255,255,255,.65)",textAlign:"right",whiteSpace:"nowrap"}}>{fN(row.reach)}</div>
-                    </div>
-                    );
-                  })}
-                  {tableRows.length===0&&<div style={{textAlign:"center",padding:40,color:"rgba(255,255,255,.18)",fontSize:12}}>Nenhuma campanha no período</div>}
-                </div>
-              )}
+          <div key={"tb-"+tabKey} className="page-enter" style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* Search bar */}
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Buscar campanha..."
+                style={{flex:1,minWidth:140,padding:"8px 14px",borderRadius:10,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",color:"#e8e8e8",fontSize:12,outline:"none",transition:"border-color .2s ease,box-shadow .2s ease"}}
+                onFocus={e=>{e.target.style.borderColor="rgba(225,48,108,.5)";e.target.style.boxShadow="0 0 0 3px rgba(225,48,108,.08)";}}
+                onBlur={e=>{e.target.style.borderColor="rgba(255,255,255,.1)";e.target.style.boxShadow="none";}}/>
+              {isMobile&&[{k:"followers",l:"+Seg"},{k:"clicks",l:"Cliq"},{k:"reach",l:"Imp"}].map(c=>(
+                <button key={c.k} onClick={()=>tSort(c.k)} style={{
+                  padding:"5px 10px",borderRadius:20,fontSize:10,fontWeight:600,border:"none",cursor:"pointer",
+                  background:sortBy===c.k?"rgba(225,48,108,.2)":"rgba(255,255,255,.06)",
+                  color:sortBy===c.k?L:"rgba(255,255,255,.35)",flexShrink:0,transition:"all .15s ease"
+                }}>{c.l}{sortBy===c.k?(sortDir==="desc"?" ↓":" ↑"):""}</button>
+              ))}
             </div>
+
+            {/* Grouped by day */}
+            {groupedRows.length===0&&(
+              <div style={{...card,padding:40,textAlign:"center",color:"rgba(255,255,255,.18)",fontSize:12}}>Nenhuma campanha no período</div>
+            )}
+            {groupedRows.map(([date,rows])=>{
+              const dayInv=rows.reduce((s,r)=>s+r.investedBRL,0);
+              const dayFo=rows.reduce((s,r)=>s+(r.followers||0),0);
+              const dayRe=rows.reduce((s,r)=>s+(r.reach||0),0);
+              const fmtDate=d=>{const [y,m,day]=d.split("-");const months=["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];return(months[parseInt(m)-1]||m)+" "+day+", "+y;};
+              return(
+                <div key={date} style={{...card,overflow:"hidden"}}>
+                  {/* Day header */}
+                  <div style={{padding:"10px 18px",background:"rgba(255,255,255,.03)",borderBottom:"1px solid rgba(255,255,255,.06)",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                    <div style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:13,fontWeight:700,color:"#fff"}}>{fmtDate(date)}</div>
+                    <div style={{flex:1}}/>
+                    <span style={{fontSize:10,color:L,fontWeight:700}}>{fR(dayInv)}</span>
+                    <span style={{fontSize:10,color:"rgba(255,255,255,.3)"}}>·</span>
+                    <span style={{fontSize:10,color:L,fontWeight:600}}>+{fN(dayFo)} seg</span>
+                    <span style={{fontSize:10,color:"rgba(255,255,255,.3)"}}>·</span>
+                    <span style={{fontSize:10,color:"rgba(255,255,255,.3)"}}>{fN(dayRe)} alcance</span>
+                    <span style={{padding:"2px 8px",borderRadius:20,background:"rgba(255,255,255,.06)",fontSize:9,color:"rgba(255,255,255,.4)",fontWeight:600}}>{rows.length} camp.</span>
+                  </div>
+
+                  {/* Desktop rows */}
+                  {!isMobile&&(
+                    <div style={{overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                        <thead>
+                          <tr style={{borderBottom:"1px solid rgba(255,255,255,.06)"}}>
+                            {[{k:"post",l:"Campanha"},{k:"investedBRL",l:"Investido"},{k:"clicks",l:"Cliques"},{k:"ctr",l:"CTR"},{k:"reach",l:"Alcance"},{k:"profileVisits",l:"Visitas"},{k:"followers",l:"Seguidores"},{k:"conversations",l:"Conversas"}].map(c=>(
+                              <th key={c.k} className={"th"+(sortBy===c.k?" on":"")} onClick={()=>tSort(c.k)}>{c.l}{sortBy===c.k?(sortDir==="desc"?" ↓":" ↑"):""}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((row,ri)=>(
+                            <tr key={row.id} className="tr" style={{borderBottom:"1px solid rgba(255,255,255,.04)",animation:`cardIn .3s ease ${ri*.03}s both`}}>
+                              <td style={{padding:"10px",fontWeight:500,color:"#e8e8e8",maxWidth:200,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={row.rawPost||row.post}>{row.post}</td>
+                              <td style={{padding:"10px",whiteSpace:"nowrap"}}>
+                                <div style={{color:L,fontWeight:700}}>{fR(row.investedBRL)}</div>
+                                <div style={{color:"rgba(255,255,255,.22)",fontSize:9,marginTop:1}}>{fU(row.investedUSD)}</div>
+                              </td>
+                              <td style={{padding:"10px",color:"#6366f1",fontWeight:600}}>{fN(row.clicks)}</td>
+                              <td style={{padding:"10px"}}><span style={{padding:"2px 7px",borderRadius:20,fontSize:10,fontWeight:600,background:row.ctr>=3.5?"rgba(225,48,108,.12)":"rgba(99,102,241,.12)",color:row.ctr>=3.5?L:"#818cf8",border:"1px solid "+(row.ctr>=3.5?"rgba(225,48,108,.25)":"rgba(99,102,241,.25)")}}>{row.ctr+"%"}</span></td>
+                              <td style={{padding:"10px",color:"#ec4899"}}>{fN(row.reach)}</td>
+                              <td style={{padding:"10px",color:"#14b8a6"}}>{fN(row.profileVisits)}</td>
+                              <td style={{padding:"10px",color:L,fontWeight:700}}>{"+"+(row.followers||0)}</td>
+                              <td style={{padding:"10px",color:"#f472b6"}}>{row.conversations||0}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Mobile rows */}
+                  {isMobile&&(
+                    <div style={{padding:"0 12px"}}>
+                      <div style={{display:"flex",alignItems:"center",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.08)"}}>
+                        <div style={{flex:2,fontSize:8,color:"rgba(255,255,255,.28)",fontWeight:700,letterSpacing:".5px"}}>CAMPANHA</div>
+                        {["SEG","R$/SEG","CLIQ","IMP"].map(h=>(
+                          <div key={h} style={{flex:1,fontSize:8,color:"rgba(255,255,255,.28)",fontWeight:700,textAlign:"right",letterSpacing:".3px"}}>{h}</div>
+                        ))}
+                      </div>
+                      {rows.map((row,ri)=>{
+                        const cpf=row.followers>0?fN(Math.round(row.investedBRL/row.followers)):"—";
+                        return(
+                          <div key={row.id} style={{display:"flex",alignItems:"center",padding:"9px 0",borderBottom:"1px solid rgba(255,255,255,.04)",animation:`cardIn .3s ease ${ri*.03}s both`}}>
+                            <div style={{flex:2,fontSize:10,fontWeight:600,color:"#fff",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",paddingRight:6}}>{row.post}</div>
+                            <div style={{flex:1,fontSize:10,fontWeight:700,color:L,textAlign:"right",whiteSpace:"nowrap"}}>{"+"+(row.followers||0)}</div>
+                            <div style={{flex:1,fontSize:10,fontWeight:700,color:"rgba(255,255,255,.65)",textAlign:"right",whiteSpace:"nowrap"}}>{cpf}</div>
+                            <div style={{flex:1,fontSize:10,fontWeight:700,color:"rgba(255,255,255,.65)",textAlign:"right",whiteSpace:"nowrap"}}>{fN(row.clicks)}</div>
+                            <div style={{flex:1,fontSize:10,fontWeight:700,color:"rgba(255,255,255,.65)",textAlign:"right",whiteSpace:"nowrap"}}>{fN(row.reach)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
